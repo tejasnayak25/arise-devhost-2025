@@ -1,0 +1,56 @@
+# ---------------------------
+# Python
+# ---------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pkl
+*.h5
+*.joblib
+
+# ---------------------------
+# Jupyter Notebooks
+# ---------------------------
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+*.ipynb_tmp
+
+# ---------------------------
+# Virtual Environments / Conda
+# ---------------------------
+env/
+.venv/
+venv/
+*.env
+.conda/
+*.conda
+*.yml
+.envrc
+.env
+
+# ---------------------------
+# IDEs and editors
+# ---------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ---------------------------
+# OS-specific files
+# ---------------------------
+.DS_Store
+Thumbs.db
+
+# ---------------------------
+# Model outputs
+# ---------------------------
+models/*.pkl
+models/*.h5
+
+# ---------------------------
+# Logs
+# ---------------------------
+*.log
