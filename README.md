@@ -28,15 +28,28 @@ reporting and help Nordic companies track and reduce emissions proactively.
    ```
    SUPABASE_URL=<your-project-url>
    SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
+   
+   # OCR API Configuration (choose one)
+   OCR_PROVIDER=ocrspace  # or "google_vision"
+   OCRSPACE_API_KEY=<your-ocrspace-key>  # Optional for free tier
+   # OR for Google Vision:
+   # GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+   # OR
+   # GOOGLE_VISION_API_KEY=<your-api-key>
    ```
-   (Or use `SUPABASE_ANON_KEY` instead of service role key)
+   
+   **OCR Provider Options:**
+   - **OCR.space** (default, free tier available): Set `OCR_PROVIDER=ocrspace` and optionally `OCRSPACE_API_KEY`
+   - **Google Cloud Vision**: Set `OCR_PROVIDER=google_vision` and provide credentials
 
-2. **Install dependencies:**
+2. **Install Python dependencies:**
 
    ```bash
    cd backend
    pip install -r requirements.txt
    ```
+   
+   **Note**: OCR uses external APIs (no local model downloads required). See OCR configuration above.
 
 3. **Run the API server:**
 
@@ -62,17 +75,96 @@ reporting and help Nordic companies track and reduce emissions proactively.
 
 ### Frontend
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+1. **Set up environment variables:**
+
+   Create a `.env` file in `frontend/` with:
+   ```
+   VITE_SUPABASE_URL=<your-supabase-project-url>
+   VITE_SUPABASE_ANON_KEY=<your-supabase-anon-key>
+   ```
+
+2. **Install dependencies and run:**
+
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+   The frontend will be available at `http://localhost:5173` (or the port Vite assigns)
+
+### API Endpoints
+
+- `GET /` - Root endpoint
+- `GET /health/supabase` - Health check for Supabase connection
+- `POST /api/upload` - File upload endpoint
+  - **CSV files**: Parses and returns structured data as JSON
+  - **Other files** (PDF, images): Uses OCR API to extract text (no local dependencies)
+  - **OCR Providers**: Supports OCR.space (free tier) and Google Cloud Vision
+  - Example request:
+    ```bash
+    curl -X POST "http://localhost:8000/api/upload" \
+      -H "accept: application/json" \
+      -H "Content-Type: multipart/form-data" \
+      -F "file=@yourfile.csv"
+    ```
 
 ### Code Structure
 
 - **Backend API:** `backend/main.py` (FastAPI app)
 - **Supabase client:** `backend/api/supabase_client.py`
+- **File processor:** `backend/api/file_processor.py` (CSV parsing & OCR API integration)
+- **OCR API:** `backend/api/ocr_api.py` (supports multiple OCR providers)
 - **Vercel entrypoint:** `backend/index.py` (for serverless deployment)
+
+**OCR Technology:**
+- Uses **OCR APIs** (no local dependencies or model downloads)
+- Supports **OCR.space** (free tier available) and **Google Cloud Vision**
+- Uses **PyMuPDF** for PDF handling (pure Python)
+- Works in serverless environments like Vercel
+- Configure via `OCR_PROVIDER` environment variable
+
+**Authentication:**
+- Uses **Supabase Auth** for user authentication
+- Supports **email/password** and **Google OAuth** sign-in
+- Protected routes require login
+- JWT tokens included in API requests
+- Session persistence enabled
+
+**To enable Google OAuth:**
+
+1. **Set up Google OAuth credentials:**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project or select existing one
+   - Enable Google+ API
+   - Go to "Credentials" > "Create Credentials" > "OAuth client ID"
+   - Application type: "Web application"
+   - Authorized redirect URIs: Add your Supabase redirect URL (see step 3)
+
+2. **Configure Supabase:**
+   - Go to your Supabase project dashboard
+   - Navigate to **Authentication > Providers**
+   - Enable **Google** provider
+   - Add your Google OAuth credentials:
+     - **Client ID** (from Google Cloud Console)
+     - **Client Secret** (from Google Cloud Console)
+   - **Site URL**: Set to `http://localhost:5173` (dev) or your production domain
+   - **Redirect URLs**: Add these exact URLs:
+     - `http://localhost:5173` (for development)
+     - `http://localhost:5173/` (with trailing slash)
+     - Your production domain (e.g., `https://yourdomain.com`)
+
+3. **Get Supabase Redirect URL:**
+   - In Supabase dashboard, go to **Authentication > URL Configuration**
+   - Copy the **Redirect URL** (format: `https://<project-ref>.supabase.co/auth/v1/callback`)
+   - Add this exact URL to Google Cloud Console's "Authorized redirect URIs"
+
+**Troubleshooting 400 errors:**
+- Ensure redirect URLs match exactly (including trailing slashes)
+- Check that Google OAuth is enabled in Supabase
+- Verify Client ID and Secret are correct
+- Make sure Site URL is set in Supabase Authentication settings
+- Check browser console for detailed error messages
 
 ## Deploy to Vercel (frontend + serverless API)
 
@@ -86,8 +178,16 @@ Project is configured for Vercel with:
 
 Set these in the project settings (Production, Preview, Development):
 
+**Backend (Python API):**
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_ANON_KEY`)
+- `OCR_PROVIDER` (default: `ocrspace`)
+- `OCRSPACE_API_KEY` (optional, for OCR.space free tier)
+- Or for Google Vision: `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_VISION_API_KEY`
+
+**Frontend (React):**
+- `VITE_SUPABASE_URL` (same as `SUPABASE_URL`)
+- `VITE_SUPABASE_ANON_KEY` (your Supabase anon/public key)
 
 Optionally, use Vercel Encrypted Environment Variables and reference them in `vercel.json`.
 

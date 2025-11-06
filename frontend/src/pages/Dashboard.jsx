@@ -3,8 +3,10 @@ import KPIs from '../shared/KPIs'
 import EmissionsChart from '../shared/EmissionsChart'
 import AISidebar from '../shared/AISidebar'
 import { getLatestEmissionsTimeSeries, getAggregatedKPIs } from '../services/dataService'
+import { useAuth } from '../contexts/AuthContext';
 
 export default function Dashboard() {
+  const { user } = useAuth();
   const series = getLatestEmissionsTimeSeries()
   const kpis = getAggregatedKPIs()
 
@@ -29,7 +31,7 @@ export default function Dashboard() {
           </ul>
         </div>
       </div>
-      <AISidebar />
+      <AISidebar user={user} />
     </div>
   )
 }

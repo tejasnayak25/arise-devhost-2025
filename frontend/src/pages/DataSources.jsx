@@ -1,19 +1,43 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import DataUpload from '../shared/DataUpload'
 import DatabaseLink from '../shared/DatabaseLink'
 import ConfirmModal from '../shared/ConfirmModal'
 import { getDbConnection, updateDbConnection, connectDb, disconnectDb, testDbConnection } from '../services/dataService'
+import { useAuth } from '../contexts/AuthContext'
+import { getFilesFromStorage } from '../services/apiService'
 
 export default function DataSources() {
   const [showAddSource, setShowAddSource] = useState(false)
   const [selectedSourceType, setSelectedSourceType] = useState(null) // 'file' | 'database' | null
   const [dbConn, setDbConn] = useState(getDbConnection())
-  
-  // Dummy sources - in real app, these would come from a service/API
-  const [connectedSources, setConnectedSources] = useState([
-    { id: 'file-1', type: 'file', name: 'Invoices CSV (September 2024)', status: 'Ready', addedAt: '2024-09-15' },
-    { id: 'db-1', type: 'database', name: 'PostgreSQL - ESG Production', status: 'Connected', addedAt: '2024-09-10' },
-  ])
+
+  const { user } = useAuth()
+
+  const [connectedSources, setConnectedSources] = useState([])
+
+  useEffect(() => {
+    async function fetchFiles() {
+      if (user?.email) {
+        try {
+          const files = await getFilesFromStorage(user.email)
+          let fileSources = files.map((file) => ({
+            id: `file-${file.id}`,
+            type: 'file',
+            name: file.name,
+            status: 'Ready',
+            addedAt: new Date(file.created_at).toISOString().split('T')[0],
+            size: file.size
+          }));
+          fileSources = fileSources.filter(i => i.size !== 0);
+          setConnectedSources((prev) => [...fileSources])
+        } catch (error) {
+          console.error('Error fetching files from storage:', error)
+        }
+      }
+    }
+
+    fetchFiles()
+  }, [user])
 
   function handleAddSource(type) {
     setSelectedSourceType(type)
@@ -44,17 +68,43 @@ export default function DataSources() {
     setConfirmTarget(null)
   }
 
-  function handleFileUploadComplete(fileName) {
-    // When file upload is complete, add it to connected sources
-    const newId = `file-${Date.now()}`
-    const newSource = {
-      id: newId,
-      type: 'file',
-      name: fileName || 'New File Upload',
-      status: 'Ready',
-      addedAt: new Date().toISOString().split('T')[0]
+  function handleFileUploadComplete(fileName, results) {
+    // When file upload is complete, add uploaded files to connected sources
+    if (results && results.length > 0) {
+      results.forEach((result, index) => {
+        if (result.success) {
+          const newId = `file-${Date.now()}-${index}`
+          const data = result.data;
+          console.log(data);
+          const status = data.type === 'csv' 
+            ? `Ready (${data.row_count} rows)`
+            : data.type === 'ocr'
+            ? 'Ready (OCR processed)'
+            : 'Ready'
+          
+          const newSource = {
+            id: newId,
+            type: 'file',
+            name: result.file.name,
+            status: status,
+            addedAt: new Date().toISOString().split('T')[0],
+            data: data // Store processed data for later use
+          }
+          setConnectedSources(prev => [newSource, ...prev])
+        }
+      })
+    } else {
+      // Fallback for backward compatibility
+      const newId = `file-${Date.now()}`
+      const newSource = {
+        id: newId,
+        type: 'file',
+        name: fileName || 'New File Upload',
+        status: 'Ready',
+        addedAt: new Date().toISOString().split('T')[0]
+      }
+      setConnectedSources(prev => [newSource, ...prev])
     }
-    setConnectedSources(prev => [newSource, ...prev])
     setSelectedSourceType(null)
   }
 
@@ -118,7 +168,7 @@ export default function DataSources() {
             <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
               Upload invoices, meter readings, and Scope 3 data files
             </p>
-            <DataUpload onComplete={handleFileUploadComplete} />
+            <DataUpload email={user.email} onComplete={handleFileUploadComplete} />
           </div>
         )}
 
