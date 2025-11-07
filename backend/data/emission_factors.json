@@ -1,0 +1,55 @@
+{
+  "electricity": {
+    "SE": 0.013,
+    "NO": 0.018,
+    "DK": 0.167,
+    "FI": 0.093,
+    "default": 0.5
+  },
+  "natural_gas": {
+    "default": 2.03
+  },
+  "diesel": {
+    "default": 2.68
+  },
+  "petrol": {
+    "default": 2.31
+  },
+  "heating_oil": {
+    "default": 2.96
+  },
+  "lpg": {
+    "default": 3.0
+  },
+  "transport_freight": {
+    "truck": 0.097,
+    "rail": 0.022,
+    "ship": 0.011,
+    "air": 0.602,
+    "default": 0.097
+  },
+  "transport_business_travel": {
+    "car": 0.171,
+    "bus": 0.089,
+    "train": 0.041,
+    "flight_domestic": 0.255,
+    "flight_international": 0.195,
+    "default": 0.171
+  },
+  "waste_disposal": {
+    "landfill": 0.5,
+    "incineration": 0.02,
+    "recycling": -0.15,
+    "composting": 0.01,
+    "default": 0.5
+  },
+  "water_consumption": {
+    "default": 0.344
+  },
+  "refrigerants": {
+    "R-134a": 1430,
+    "R-410A": 2088,
+    "R-32": 675,
+    "default": 1430
+  }
+}

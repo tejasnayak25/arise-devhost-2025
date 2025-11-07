@@ -81,6 +81,42 @@ def _is_number(v) -> bool:
     except Exception:
         return False
 
+def load_electricity_factors_from_api() -> Dict[str, float]:
+        """
+        Attempts to fetch electricity carbon intensity for given entities from Ember API (if API key is configured).
+        Returns a mapping e.g. {'SE': 0.013, 'NO': 0.018}
+        NOTE: endpoint signatures may change; this method tries a conservative request pattern.
+        """
+        entities = ["SWE", "NOR", "DNK", "FIN", None]
+        emission_data: Dict[str, float] = {}
+        
+        base_url = "https://api.ember-energy.org/v1/carbon-intensity/yearly"
+
+        for code in entities:
+            try:
+                params = {"entity_code": code, "include_all_dates_value_range": "false", "start_date":2024, "end_date": 2025,"api_key": os.environ.get('EMBER_API')}
+                res = requests.get(base_url, params=params, timeout=10)
+                if res.status_code != 200:
+                    print(f"Ember API returned {res.status_code} for {code}: {res.text}")
+                    continue
+                payload = res.json()
+                data = payload.get("data")
+                if not data:
+                    print('data not found')
+                    print(data)
+                    continue
+                # pick most recent entry
+                recent = data[0] if isinstance(data, list) and data else data
+                # Ember returns gCO2/kWh often; convert to kg CO2/kWh
+                intensity_g = recent.get("emissions_intensity_gco2_per_kwh") or recent.get("gco2_per_kwh") or recent.get("value")
+                if intensity_g is None:
+                    continue
+                emission_data[code] = float(intensity_g) / 1000.0
+            except Exception as e:
+                print(f"Failed to fetch Ember data for {code}: {e}")
+                continue
+
+        return emission_data
 
 def fetch_from_url(url: str) -> Dict[str, float]:
     try:
@@ -114,7 +150,7 @@ def refresh_cached_factors() -> Dict[str, float]:
 
     for src in sources:
         try:
-            mapping = fetch_from_url(src)
+            mapping = load_electricity_factors_from_api()
             for k, v in mapping.items():
                 # prefer existing cached value if present
                 if k not in combined:
