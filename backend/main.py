@@ -744,7 +744,7 @@ def start_scheduler():
     except Exception:
         return
     scheduler = BackgroundScheduler()
-    scheduler.add_job(generate_monthly_reports, 'cron', hour=10, minute=15)
+    scheduler.add_job(generate_monthly_reports, 'cron', day=1, hour=0, minute=0)
     scheduler.start()
 
 
