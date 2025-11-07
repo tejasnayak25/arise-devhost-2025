@@ -3,6 +3,7 @@ import KPIs from '../shared/KPIs'
 import EmissionsChart from '../shared/EmissionsChart'
 import EmissionsBreakdown from '../shared/EmissionsBreakdown'
 import AISidebar from '../shared/AISidebar'
+import EmissionsComparison from '../shared/EmissionsComparison'
 import { getLatestEmissionsTimeSeries, getAggregatedKPIs, getLastMonthInvoiceData, computeItemLevelEmissions } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext';
 import CompanyRequired from '../shared/CompanyRequired';
@@ -15,6 +16,7 @@ export default function Dashboard() {
   const [invoiceData, setInvoiceData] = useState(null);
   const [itemEmissions, setItemEmissions] = useState(null);
   const [fallbackItemEmissions, setFallbackItemEmissions] = useState(null);
+  const [itemsLoading, setItemsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -27,6 +29,24 @@ export default function Dashboard() {
     const inv = invoiceData?.total_emissions || 0
     const sensors = invoiceData?.sensor_emissions || 0
     return +(inv + sensors).toFixed(6)
+  }, [invoiceData])
+
+  // Build a comparison series of daily positive (removal) vs negative (emitted) emissions
+  const comparisonSeries = useMemo(() => {
+    const rows = invoiceData?.raw || []
+    const map = {}
+    for (const r of rows) {
+      const d = (r.date || '').slice(0,10) || null
+      if (!d) continue
+      let qty = r.quantity
+      if (typeof qty !== 'number') continue
+      const isPos = !!r.is_positive
+      console.log(r)
+      if (!map[d]) map[d] = { date: d, positive: 0, negative: 0 }
+      if (isPos) map[d].positive += qty
+      else map[d].negative += qty
+    }
+    return Object.values(map).sort((a,b) => a.date.localeCompare(b.date))
   }, [invoiceData])
 
   const handleCompanySuccess = useCallback(() => {
@@ -48,16 +68,27 @@ export default function Dashboard() {
   useEffect(() => {
     if (company && company.id) {
       setLoading(true);
+      // Fetch invoice data then concurrently request item-level emissions (LLM) and fallback computation
       getLastMonthInvoiceData(company.id)
         .then((res) => {
           setInvoiceData(res);
-          // fetch LLM-provided per-item emissions
-          fetch(`/api/company-item-emissions?company_id=${encodeURIComponent(company.id)}`)
-            .then(r => r.json())
-            .then(d => setItemEmissions(d.items || null))
-            .catch(() => setItemEmissions(null))
-          // compute fallback item emissions asynchronously if LLM not present
-          computeItemLevelEmissions(res).then(fe => setFallbackItemEmissions(fe)).catch(() => setFallbackItemEmissions(null))
+          setItemsLoading(true);
+
+          const llmFetch = fetch(`/api/company-item-emissions?company_id=${encodeURIComponent(company.id)}`)
+            .then(r => r.json()).then(d => d.items || null).catch(() => null);
+
+          const fallbackCalc = computeItemLevelEmissions(res).catch(() => null);
+
+          Promise.allSettled([llmFetch, fallbackCalc]).then((results) => {
+            // results[0] = llm, results[1] = fallback
+            if (results[0].status === 'fulfilled') setItemEmissions(results[0].value);
+            else setItemEmissions(null);
+
+            if (results[1].status === 'fulfilled') setFallbackItemEmissions(results[1].value);
+            else setFallbackItemEmissions(null);
+
+            setItemsLoading(false);
+          });
         })
         .catch(() => setInvoiceData(null))
         .finally(() => setLoading(false));
@@ -107,6 +138,10 @@ export default function Dashboard() {
           <EmissionsChart data={series} />
         </div>
         <div className="panel">
+          <h3>Emission Comparison: Removals vs Emitted</h3>
+          <EmissionsComparison data={comparisonSeries} />
+        </div>
+        <div className="panel">
           <h3>Emissions Breakdown</h3>
           <EmissionsBreakdown invoiceKg={invoiceData?.total_emissions || 0} sensorKg={invoiceData?.sensor_emissions || 0} />
         </div>
@@ -139,6 +174,23 @@ export default function Dashboard() {
             <tbody>
               {(() => {
                 // Normalize invoice items list
+                // While itemsLoading is true, show placeholder rows instead of mapping real data
+                if (itemsLoading) {
+                  return (
+                    <>
+                      {[0,1,2,3,4].map((i) => (
+                        <tr key={`placeholder-${i}`} style={{ opacity: 0.9 }}>
+                          <td><span className="skeleton skeleton-line skeleton-full" /></td>
+                          <td><span className="skeleton skeleton-small" /></td>
+                          <td><span className="skeleton skeleton-mid" /></td>
+                          <td><span className="skeleton skeleton-small" /></td>
+                          <td><span className="skeleton skeleton-small" /></td>
+                        </tr>
+                      ))}
+                    </>
+                  )
+                }
+
                 const invoiceList = (itemEmissions && Array.isArray(itemEmissions) ? itemEmissions : (fallbackItemEmissions || []))
                   .map(it => ({
                     source: 'invoice',
@@ -147,6 +199,7 @@ export default function Dashboard() {
                     unit: it.unit || 'item',
                     factor: it.factor ?? null,
                     emissions: it.emissions ?? null,
+                    is_positive: !!it.is_positive,
                     // formula: it.formula || ''
                   }));
 
@@ -184,13 +237,20 @@ export default function Dashboard() {
                   );
                 }
 
+                console.log('rendering items', filtered);
+
                 return filtered.map((it, i) => (
                   <tr key={`${it.source}-${i}`}>
-                    <td>{it.name}</td>
+                    <td>
+                      {it.name}
+                      {it.source === 'invoice' && it.is_positive && (
+                        <span style={{ marginLeft: 8, color: '#34d399', fontWeight: 700 }}>↗ removal</span>
+                      )}
+                    </td>
                     <td>{it.quantity ?? '-'}</td>
                     <td>{it.unit || '-'}</td>
                     <td>{it.factor ?? '-'}</td>
-                    <td>{it.emissions ?? '-'}</td>
+                    <td style={{ color: (it.is_positive ? '#34d399' : undefined) }}>{it.emissions ?? '-'}</td>
                     {/* <td style={{ maxWidth: 400, whiteSpace: 'normal' }}>{it.formula}</td> */}
                   </tr>
                 ))

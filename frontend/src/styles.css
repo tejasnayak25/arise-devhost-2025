@@ -182,3 +182,38 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px
   top: 0;
   left: 0;
 }
+
+/* Skeleton loading helpers (small shimmer bars used for placeholders) */
+.skeleton {
+  display: inline-block;
+  background: linear-gradient(90deg, rgba(255,255,255,0.13), rgba(255,255,255,0.18), rgba(255,255,255,0.13));
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+}
+.skeleton-line {
+  height: 14px;
+  width: 120px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.04) 100%);
+  border-radius: 6px;
+  animation: shimmer 7s linear infinite;
+  -webkit-animation: shimmer 7s linear infinite;
+}
+.skeleton-small { width: 60px; height: 12px;
+  animation: shimmer 7s linear infinite;
+  -webkit-animation: shimmer 7s linear infinite;
+}
+.skeleton-mid { width: 90px;
+  height: 12px;
+  animation: shimmer 7s linear infinite;
+  -webkit-animation: shimmer 7s linear infinite;
+}
+.skeleton-full { width: 100%;
+  animation: shimmer 7s linear infinite;
+  -webkit-animation: shimmer 7s linear infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200px 0 }
+  100% { background-position: 200px 0 }
+}

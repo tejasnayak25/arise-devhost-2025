@@ -101,6 +101,7 @@ export async function computeItemLevelEmissions(invoiceData) {
       factor: factor,
       emissions: emissions !== null ? Number(emissions.toFixed(4)) : null,
       formula,
+      is_positive: !!r.is_positive
     }
   })
 }

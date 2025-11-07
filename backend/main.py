@@ -217,6 +217,11 @@ def _parse_iso(ts: str):
             "- reason (short string) -- brief explanation for the classification decision\n"
             "Return ONLY a JSON array (no extra text). Preserve the input ordering. Be conservative when labeling items as positive; when unsure, set is_positive=false and confidence below 0.6."
         )
+def compute_sensor_emissions(client, company_id, start_iso, end_iso):
+    """Compute sensor-derived emissions for a company between start_iso and end_iso.
+
+    Returns: (total_emissions_kg: float, summaries: list)
+    """
     # Fetch sensors tied to company_id
     try:
         sres = client.table('sensors').select('*').eq('company_id', company_id).execute()
@@ -498,8 +503,31 @@ def generate_monthly_reports():
         r = q.execute()
         rows = r.data or []
         # Simple aggregates
-        total_spend = sum([row.get("price") or 0 for row in rows if isinstance(row.get("price"), (int, float))])
-        total_emissions = sum([row.get("quantity") or 0 for row in rows if isinstance(row.get("quantity"), (int, float))])
+        total_spend = 0
+        total_emissions = 0
+        # When an invoice line item has is_positive=True it represents a net-negative resource
+        # and should reduce overall emissions (subtract from totals). We still count spend
+        # as positive (money out), but emissions are negated for positive items.
+        for row in rows:
+            # accumulate spend
+            price = row.get("price")
+            if isinstance(price, (int, float)):
+                total_spend += price
+
+            # handle quantity/emissions: negate when is_positive True
+            qty = row.get("quantity")
+            if isinstance(qty, (int, float)):
+                try:
+                    # some rows may specify units like 'tonne CO2' -- try converting
+                    converted = emission_factors.convert_to_kg(qty, row.get('unit'))
+                    qty_val = converted if converted is not None else qty
+                except Exception:
+                    qty_val = qty
+
+                if row.get('is_positive'):
+                    total_emissions -= qty_val
+                else:
+                    total_emissions += qty_val
         item_counts = {}
         for row in rows:
             typ = row.get("type") or "other"
@@ -938,7 +966,10 @@ async def parse_invoice(payload:dict = Body(...)):
                         "type": row.get("type", None),
                         "date": date_str,
                         "company_id": company_id,
-                        "invoice_path": storage_path
+                        "invoice_path": storage_path,
+                        "is_positive": row.get("is_positive", None),
+                        "confidence": row.get("confidence", None),
+                        "reason": row.get("reason", None),
                     })
             if to_insert:
                 insert_result = supabase.table("invoices").insert(to_insert).execute()
@@ -999,7 +1030,12 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
             quantity_kg = quantity
 
         if isinstance(quantity_kg, (int, float)):
-            total_emissions += quantity_kg
+            # If this invoice line is marked as a net-negative (is_positive), it reduces
+            # the company's footprint so subtract it; otherwise add it.
+            if row.get('is_positive'):
+                total_emissions -= quantity_kg
+            else:
+                total_emissions += quantity_kg
         # Count by type
         typ = row.get("type")
         if typ:
@@ -1009,7 +1045,10 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
         if created:
             day = created[:10]  # YYYY-MM-DD
             val = quantity_kg if isinstance(quantity_kg, (int, float)) else 0
-            time_series[day] = time_series.get(day, 0) + val
+            if row.get('is_positive'):
+                time_series[day] = time_series.get(day, 0) - val
+            else:
+                time_series[day] = time_series.get(day, 0) + val
 
     # Include sensor-derived emissions for the same period
     sensor_total = 0
@@ -1063,7 +1102,8 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
             'quantity': r.get('quantity'),
             'price': r.get('price'),
             'unit': r.get('unit'),
-            'type': r.get('type')
+            'type': r.get('type'),
+            'is_positive': r.get('is_positive')
         }
         for r in rows
     ]
@@ -1071,7 +1111,7 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
     if GEMINI_API_KEY and items_payload:
         try:
             system_prompt = (
-                'You are a carbon accounting assistant. Given a list of invoice line items, for each item return a JSON object with: name, quantity (number or null), unit (string), factor (kg CO2e per unit or null), emissions (kg CO2e or null), formula (human-readable). Return a JSON array in the same order as input.'
+                'You are a carbon accounting assistant. Given a list of invoice line items, for each item return a JSON object with: name, quantity (number or null), unit (string), factor (kg CO2e per unit or null), emissions (kg CO2e or null), formula (human-readable), is_positive. Return a JSON array in the same order as input.'
             )
             client_g = genai.Client(api_key=GEMINI_API_KEY)
             response = client_g.models.generate_content(
@@ -1111,6 +1151,9 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
         cached = emission_factors.get_factor_for_unit(unit)
         if cached is not None:
             emissions = qty_for_calc * cached if qty_for_calc is not None else None
+            # If the original invoice line was a net-negative (is_positive), make emissions negative
+            if r.get('is_positive') and emissions is not None:
+                emissions = -abs(emissions)
             if qty_for_calc is not None and qty_for_calc != qty:
                 formula = f"Converted {qty} {unit} -> {qty_for_calc} kg; {qty_for_calc} * {cached} = {emissions}"
             else:
@@ -1121,7 +1164,8 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
                 'unit': unit,
                 'factor': cached,
                 'emissions': emissions,
-                'formula': formula
+                'formula': formula,
+                'is_positive': r.get('is_positive')
             })
         else:
             fallback.append({
@@ -1130,7 +1174,8 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
                 'unit': unit,
                 'factor': None,
                 'emissions': None,
-                'formula': 'No factor available — Gemini not configured or failed. Please map unit to factor.'
+                'formula': 'No factor available — Gemini not configured or failed. Please map unit to factor.',
+                'is_positive': r.get('is_positive')
             })
     return JSONResponse(content={'items': fallback, 'raw': rows})
 
