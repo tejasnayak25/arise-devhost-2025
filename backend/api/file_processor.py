@@ -6,6 +6,7 @@ import easyocr
 import fitz  # PyMuPDF
 from fastapi import UploadFile
 from PIL import Image
+import numpy as _np
 
 # Initialize EasyOCR reader once (lazy loading on first use)
 _ocr_reader: Optional[easyocr.Reader] = None
@@ -26,50 +27,44 @@ def is_csv_file(filename: str) -> bool:
 	return filename.lower().endswith(('.csv',))
 
 
-def parse_csv(file: UploadFile) -> Dict[str, Union[List[Dict], str]]:
-	"""Parse CSV file and return structured data."""
+def parse_csv_bytes(content: bytes, filename: str) -> Dict[str, Union[List[Dict], str]]:
+	"""Parse CSV bytes and return structured data."""
 	try:
-		# Read file content
-		content = file.file.read()
-		file.file.seek(0)  # Reset file pointer
-		
 		# Try to decode as UTF-8, fallback to latin-1 if needed
 		try:
 			text = content.decode('utf-8')
 		except UnicodeDecodeError:
 			text = content.decode('latin-1')
-		
+
 		# Parse CSV
 		csv_reader = csv.DictReader(io.StringIO(text))
 		rows = list(csv_reader)
-		
+
 		return {
 			"type": "csv",
 			"data": rows,
 			"row_count": len(rows),
-			"columns": list(rows[0].keys()) if rows else []
+			"columns": list(rows[0].keys()) if rows else [],
+			"filename": filename,
 		}
 	except Exception as e:
 		return {
 			"type": "csv",
 			"error": f"Failed to parse CSV: {str(e)}",
-			"data": []
+			"data": [],
+			"filename": filename,
 		}
 
 
-def extract_text_with_ocr(file: UploadFile) -> Dict[str, Union[str, List[str]]]:
-	"""Extract text from image or PDF using EasyOCR (pure Python, no system deps)."""
+def extract_text_with_ocr_bytes(content: bytes, filename: str) -> Dict[str, Union[str, List[str]]]:
+	"""Extract text from image or PDF bytes using EasyOCR."""
 	try:
-		# Read file content
-		content = file.file.read()
-		file.file.seek(0)  # Reset file pointer
-		
 		# Check if it's a PDF
-		if file.filename and file.filename.lower().endswith('.pdf'):
-			return extract_text_from_pdf(content, file.filename)
-		
+		if filename and filename.lower().endswith('.pdf'):
+			return extract_text_from_pdf(content, filename)
+
 		# Otherwise, treat as image
-		return extract_text_from_image(content, file.filename)
+		return extract_text_from_image(content, filename)
 	except Exception as e:
 		return {
 			"type": "ocr",
@@ -102,7 +97,9 @@ def extract_text_from_pdf(pdf_bytes: bytes, filename: str) -> Dict[str, Union[st
 				
 				# Use EasyOCR on the image
 				image = Image.open(io.BytesIO(img_bytes))
-				results = reader.readtext(image)
+				# convert PIL image to numpy array for EasyOCR
+				img_arr = _np.array(image.convert('RGB'))
+				results = reader.readtext(img_arr)
 				
 				# Combine all detected text
 				text = "\n".join([result[1] for result in results])
@@ -141,7 +138,9 @@ def extract_text_from_image(image_bytes: bytes, filename: str) -> Dict[str, str]
 		
 		# Get OCR reader and perform OCR
 		reader = get_ocr_reader()
-		results = reader.readtext(image)
+		# convert to numpy array (EasyOCR expects an array)
+		img_arr = _np.array(image.convert('RGB'))
+		results = reader.readtext(img_arr)
 		
 		# Combine all detected text
 		text = "\n".join([result[1] for result in results])
@@ -169,15 +168,30 @@ async def process_uploaded_file(file: UploadFile) -> Dict[str, Union[str, List, 
 			"error": "No filename provided",
 			"filename": None
 		}
-	
+	# Read the entire uploaded file once (async-safe)
+	content = await file.read()
+	# Reset UploadFile pointer for callers that expect to re-read
+	try:
+		await file.seek(0)
+	except Exception:
+		pass
+
 	# Check if file is CSV
 	if is_csv_file(file.filename):
-		result = parse_csv(file)
-		result["filename"] = file.filename
+		result = parse_csv_bytes(content, file.filename)
 		return result
-	else:
-		# Use OCR for non-CSV files
-		result = extract_text_with_ocr(file)
-		result["filename"] = file.filename
-		return result
+
+	# Use OCR for non-CSV files
+	result = extract_text_with_ocr_bytes(content, file.filename)
+	return result
+
+# Backwards-compatible wrappers (if other code calls the old functions)
+def parse_csv(file: UploadFile):
+	# synchronous wrapper: read bytes then call parse_csv_bytes
+	content = file.file.read()
+	return parse_csv_bytes(content, file.filename)
+
+def extract_text_with_ocr(file: UploadFile):
+	content = file.file.read()
+	return extract_text_with_ocr_bytes(content, file.filename)
 

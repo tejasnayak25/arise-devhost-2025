@@ -16,7 +16,7 @@ export default function EmissionsChart({ data }) {
           <XAxis dataKey="month" tick={{ fill: '#9ca3af', fontSize: 12 }} axisLine={false} tickLine={false} />
           <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} axisLine={false} tickLine={false} />
           <Tooltip contentStyle={{ background: '#0b1220', border: '1px solid rgba(255,255,255,.1)', color: '#e5e7eb' }} />
-          <Area type="monotone" dataKey="tco2e" stroke="#60a5fa" fillOpacity={1} fill="url(#colorCo2)" />
+          <Area type="monotone" dataKey="kgco2" stroke="#60a5fa" fillOpacity={1} fill="url(#colorCo2)" />
         </AreaChart>
       </ResponsiveContainer>
     </div>

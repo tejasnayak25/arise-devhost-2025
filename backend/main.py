@@ -10,6 +10,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from backend.api.file_processor import process_uploaded_file
+from backend.api import emission_factors
 from backend.api.supabase_client import (
     get_supabase_client,
     initialize_supabase_from_env,
@@ -39,9 +40,14 @@ async def root():
 
 @app.on_event("startup")
 async def startup_event() -> None:
-	# Initialize Supabase client and attach to app state
-	client = initialize_supabase_from_env()
-	app.state.supabase = client
+    # Initialize Supabase client and attach to app state
+    client = initialize_supabase_from_env()
+    app.state.supabase = client
+    # Attempt to refresh cached emission factors (if EMISSION_FACTORS_SOURCES configured)
+    try:
+        emission_factors.refresh_cached_factors()
+    except Exception:
+        pass
 
 
 def supabase_dep():
@@ -80,6 +86,50 @@ def generate_monthly_reports():
             typ = row.get("type") or "other"
             item_counts[typ] = item_counts.get(typ, 0) + 1
 
+        # Try to get per-item emissions (factor + calculation) from Gemini
+        llm_item_results = None
+        if GEMINI_API_KEY and rows:
+            try:
+                # Compose a short data payload
+                items_payload = [
+                    {
+                        'name': r.get('name'),
+                        'quantity': r.get('quantity'),
+                        'price': r.get('price'),
+                        'unit': r.get('unit'),
+                        'type': r.get('type')
+                    }
+                    for r in rows
+                ]
+
+                system_prompt = (
+                    "You are a carbon accounting assistant. Given a list of invoice line items, for each item return a JSON object with the following fields:"
+                    "\n- name: item description"
+                    "\n- quantity: numeric quantity (or null)"
+                    "\n- unit: the unit string (e.g., kWh, l, kg, item, kgCO2)"
+                    "\n- factor: the emission factor in kg CO2e per unit (if you can infer a reasonable default), otherwise null"
+                    "\n- emissions: numeric kg CO2e computed as quantity * factor when possible, otherwise null"
+                    "\n- formula: a short human-readable formula explaining the calculation"
+                    "\nReturn a JSON array of these objects in the same order as input. If you cannot determine a factor, set factor to null and explain in formula. Use concise numeric formats."
+                )
+
+                client_g = genai.Client(api_key=GEMINI_API_KEY)
+                response = client_g.models.generate_content(
+                    model='gemini-2.5-flash',
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        response_mime_type='application/json',
+                    ),
+                    contents=_json.dumps({'items': items_payload})
+                )
+                try:
+                    import json as _py
+                    llm_item_results = _py.loads(response.text)
+                except Exception:
+                    llm_item_results = None
+            except Exception:
+                llm_item_results = None
+
         # Load regulations to include in the report (best-effort)
         try:
             with open('backend/data/regulations.json', 'r', encoding='utf-8') as rf:
@@ -98,7 +148,7 @@ def generate_monthly_reports():
         c.setFont("Helvetica", 11)
         c.drawString(40, y, f"Period: {first_of_this_month.date()} to {(next_month - timedelta(days=1)).date()}")
         y -= 20
-        c.drawString(40, y, f"Total Emissions (sum of quantity): {total_emissions} tCO₂e")
+        c.drawString(40, y, f"Total Emissions (sum of quantity): {total_emissions} kg CO₂e")
         y -= 16
         c.drawString(40, y, f"Total Spend: ${total_spend}")
         y -= 24
@@ -142,7 +192,7 @@ def generate_monthly_reports():
         c.drawString(40, y, "Raw Items")
         y -= 18
         c.setFont("Helvetica", 9)
-        for row in rows:
+        for idx, row in enumerate(rows):
             text = f"- {row.get('name','')} | qty: {row.get('quantity','')} | price: {row.get('price','')} | unit: {row.get('unit','')} | type: {row.get('type','')}"
             # naive wrap: if too long, split
             if len(text) > 100:
@@ -157,6 +207,60 @@ def generate_monthly_reports():
             else:
                 c.drawString(44, y, text)
                 y -= 12
+            # If LLM returned item-level emissions, print them below the item
+            try:
+                item_llm = None
+                if llm_item_results and isinstance(llm_item_results, list) and idx < len(llm_item_results):
+                    item_llm = llm_item_results[idx]
+                # Fallback: try to match by name
+                if not item_llm and llm_item_results:
+                    name = row.get('name','')
+                    for it in llm_item_results:
+                        if isinstance(it, dict) and it.get('name') and it.get('name').strip().lower() == str(name).strip().lower():
+                            item_llm = it
+                            break
+
+                if item_llm:
+                    factor = item_llm.get('factor')
+                    emissions = item_llm.get('emissions')
+                    formula = item_llm.get('formula') or ''
+                    info_line = f"  → factor: {factor if factor is not None else 'n/a'} kg CO2e/unit | emissions: {emissions if emissions is not None else 'n/a'} kg CO2e"
+                    c.drawString(52, y, info_line)
+                    y -= 12
+                    if formula:
+                        # wrap formula if long
+                        fparts = [formula[i:i+100] for i in range(0, len(formula), 100)]
+                        for fp in fparts:
+                            c.drawString(56, y, fp)
+                            y -= 12
+                            if y < 60:
+                                c.showPage()
+                                y = height - 50
+                                c.setFont("Helvetica", 9)
+                else:
+                    # Try to use cached official emission factors (EU sources) as a fallback
+                    try:
+                        unit = row.get('unit')
+                        qty = row.get('quantity') if isinstance(row.get('quantity'), (int, float)) else None
+                        cached = emission_factors.get_factor_for_unit(unit)
+                        if cached is not None:
+                            emissions = qty * cached if qty is not None else None
+                            info_line = f"  → factor (official cache): {cached} kg CO2e/{unit or 'unit'} | emissions: {emissions if emissions is not None else 'n/a'} kg CO2e"
+                            c.drawString(52, y, info_line)
+                            y -= 12
+                            formula = f"{qty} * {cached} = {emissions}" if emissions is not None else f"factor: {cached} (quantity missing)"
+                            c.drawString(56, y, formula)
+                            y -= 12
+                    except Exception:
+                        pass
+                # ensure page break if near bottom
+                if y < 60:
+                    c.showPage()
+                    y = height - 50
+                    c.setFont("Helvetica", 9)
+            except Exception:
+                # ignore LLM rendering errors and continue
+                pass
             if y < 60:
                 c.showPage()
                 y = height - 50
@@ -388,10 +492,21 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
         price = row.get("price")
         if isinstance(price, (int, float)):
             total_spend += price
-        # Sum quantity as emissions for all types
-        quantity = row.get("quantity")
-        if isinstance(quantity, (int, float)):
-            total_emissions += quantity
+        # Determine quantity and convert to kg if row unit indicates tonnes of CO2
+        quantity_raw = row.get("quantity")
+        quantity = quantity_raw if isinstance(quantity_raw, (int, float)) else None
+        # Try to convert explicit tonne-of-CO2 quantities to kg
+        try:
+            converted = emission_factors.convert_to_kg(quantity, row.get("unit"))
+            if converted is not None:
+                quantity_kg = converted
+            else:
+                quantity_kg = quantity
+        except Exception:
+            quantity_kg = quantity
+
+        if isinstance(quantity_kg, (int, float)):
+            total_emissions += quantity_kg
         # Count by type
         typ = row.get("type")
         if typ:
@@ -400,7 +515,7 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
         created = row.get("created_at")
         if created:
             day = created[:10]  # YYYY-MM-DD
-            val = quantity if isinstance(quantity, (int, float)) else 0
+            val = quantity_kg if isinstance(quantity_kg, (int, float)) else 0
             time_series[day] = time_series.get(day, 0) + val
 
     # Compose response
@@ -411,6 +526,104 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
         "time_series": time_series,
         "raw": rows
     })
+
+
+@app.get('/api/company-item-emissions')
+async def get_company_item_emissions(company_id: int, client=Depends(supabase_dep)):
+    """Return per-invoice-item emission factors/emissions computed by Gemini for the current month."""
+    # Calculate date range
+    today = datetime.utcnow()
+    first_of_this_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    next_month = (first_of_this_month.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+    query = (
+        client.table('invoices')
+        .select('*')
+        .eq('company_id', company_id)
+        .gte('created_at', first_of_this_month.isoformat())
+        .lt('created_at', next_month.isoformat())
+    )
+    res = query.execute()
+    if hasattr(res, 'error') and res.error:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch invoices: {res.error}")
+    rows = res.data or []
+
+    items_payload = [
+        {
+            'name': r.get('name'),
+            'quantity': r.get('quantity'),
+            'price': r.get('price'),
+            'unit': r.get('unit'),
+            'type': r.get('type')
+        }
+        for r in rows
+    ]
+
+    if GEMINI_API_KEY and items_payload:
+        try:
+            system_prompt = (
+                'You are a carbon accounting assistant. Given a list of invoice line items, for each item return a JSON object with: name, quantity (number or null), unit (string), factor (kg CO2e per unit or null), emissions (kg CO2e or null), formula (human-readable). Return a JSON array in the same order as input.'
+            )
+            client_g = genai.Client(api_key=GEMINI_API_KEY)
+            response = client_g.models.generate_content(
+                model='gemini-2.5-flash',
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type='application/json',
+                ),
+                contents=_json.dumps({'items': items_payload})
+            )
+            import json as _py
+            try:
+                findings = _py.loads(response.text)
+            except Exception:
+                findings = None
+            if findings and isinstance(findings, list):
+                return JSONResponse(content={'items': findings, 'raw': rows})
+        except Exception:
+            # fall through to fallback
+            pass
+
+    # Fallback: return rows with null factor/emissions and a helpful message
+    fallback = []
+    for r in items_payload:
+        # Attempt to use cached factor for unit
+        unit = r.get('unit')
+        qty_raw = r.get('quantity')
+        qty = qty_raw if isinstance(qty_raw, (int, float)) else None
+        # If unit indicates tonnes of CO2, convert to kg for emissions calculation
+        qty_for_calc = qty
+        try:
+            converted = emission_factors.convert_to_kg(qty, unit)
+            if converted is not None:
+                qty_for_calc = converted
+        except Exception:
+            pass
+        cached = emission_factors.get_factor_for_unit(unit)
+        if cached is not None:
+            emissions = qty_for_calc * cached if qty_for_calc is not None else None
+            if qty_for_calc is not None and qty_for_calc != qty:
+                formula = f"Converted {qty} {unit} -> {qty_for_calc} kg; {qty_for_calc} * {cached} = {emissions}"
+            else:
+                formula = f"{qty_for_calc} * {cached} = {emissions}" if emissions is not None else f"factor: {cached} (quantity missing)"
+            fallback.append({
+                'name': r.get('name'),
+                'quantity': qty,
+                'unit': unit,
+                'factor': cached,
+                'emissions': emissions,
+                'formula': formula
+            })
+        else:
+            fallback.append({
+                'name': r.get('name'),
+                'quantity': qty,
+                'unit': unit,
+                'factor': None,
+                'emissions': None,
+                'formula': 'No factor available — Gemini not configured or failed. Please map unit to factor.'
+            })
+    return JSONResponse(content={'items': fallback, 'raw': rows})
 
 
 @app.get('/api/reports')
@@ -444,6 +657,26 @@ async def download_report(path: str, company_id: int, client=Depends(supabase_de
         else:
             signed = url
         return JSONResponse(content={"url": signed})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/api/emission-factors')
+async def get_emission_factors():
+    """Return the cached emission factors mapping."""
+    try:
+        mapping = emission_factors.load_cached_factors()
+        return JSONResponse(content={'factors': mapping})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/emission-factors/refresh')
+async def refresh_emission_factors():
+    """Refresh cached emission factors from configured sources."""
+    try:
+        mapping = emission_factors.refresh_cached_factors()
+        return JSONResponse(content={'factors': mapping})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

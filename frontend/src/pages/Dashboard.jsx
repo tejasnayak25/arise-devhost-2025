@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import KPIs from '../shared/KPIs'
 import EmissionsChart from '../shared/EmissionsChart'
 import AISidebar from '../shared/AISidebar'
-import { getLatestEmissionsTimeSeries, getAggregatedKPIs, getLastMonthInvoiceData } from '../services/dataService'
+import { getLatestEmissionsTimeSeries, getAggregatedKPIs, getLastMonthInvoiceData, computeItemLevelEmissions } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext';
 import CompanyRequired from '../shared/CompanyRequired';
 import { getUserCompany } from '../services/companyService';
@@ -12,6 +12,8 @@ export default function Dashboard() {
   const { user } = useAuth();
   const [company, setCompany] = useState(undefined); // undefined = loading, null = not in company
   const [invoiceData, setInvoiceData] = useState(null);
+  const [itemEmissions, setItemEmissions] = useState(null);
+  const [fallbackItemEmissions, setFallbackItemEmissions] = useState(null);
   const [loading, setLoading] = useState(false);
 
   // Memoize derived KPIs and series to avoid recalculation on every render
@@ -40,6 +42,13 @@ export default function Dashboard() {
       getLastMonthInvoiceData(company.id)
         .then((res) => {
           setInvoiceData(res);
+          // fetch LLM-provided per-item emissions
+          fetch(`/api/company-item-emissions?company_id=${encodeURIComponent(company.id)}`)
+            .then(r => r.json())
+            .then(d => setItemEmissions(d.items || null))
+            .catch(() => setItemEmissions(null))
+          // compute fallback item emissions asynchronously if LLM not present
+          computeItemLevelEmissions(res).then(fe => setFallbackItemEmissions(fe)).catch(() => setFallbackItemEmissions(null))
         })
         .catch(() => setInvoiceData(null))
         .finally(() => setLoading(false));
@@ -70,7 +79,7 @@ export default function Dashboard() {
           <h3>Carbon Footprint Report (Current Month)</h3>
           {invoiceData && invoiceData.total_emissions !== undefined ? (
             <>
-              <p><b>Total Emissions:</b> {invoiceData.total_emissions} tCO₂e</p>
+              <p><b>Total Emissions:</b> {invoiceData.total_emissions} kg CO₂e</p>
               <p><b>Total Spend:</b> {invoiceData.total_spend} $</p>
               <p><b>Invoices Processed:</b> {invoiceData.raw ? invoiceData.raw.length : 0}</p>
               <p><b>Breakdown by Type:</b> {Object.entries(invoiceData.item_counts || {}).map(([type, count]) => `${type}: ${count}`).join(', ')}</p>
@@ -80,8 +89,39 @@ export default function Dashboard() {
           )}
         </div>
         <div className="panel">
-          <h3>Emissions Trend (tCO₂e)</h3>
+          <h3>Emissions Trend (kg CO₂e)</h3>
           <EmissionsChart data={series} />
+        </div>
+        <div className="panel">
+          <h3>Item-level Emissions</h3>
+          {invoiceData?.raw && invoiceData.raw.length > 0 ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Quantity</th>
+                  <th>Unit</th>
+                  <th>Factor (kg CO₂e/unit)</th>
+                  <th>Emissions (kg CO₂e)</th>
+                  <th>Calculation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(itemEmissions && Array.isArray(itemEmissions) ? itemEmissions : (fallbackItemEmissions || [])).map((it, i) => (
+                  <tr key={i}>
+                    <td>{it.name}</td>
+                    <td>{it.quantity ?? '-'}</td>
+                    <td>{it.unit || '-'}</td>
+                    <td>{it.factor ?? '-'}</td>
+                    <td>{it.emissions ?? '-'}</td>
+                    <td style={{ maxWidth: 400, whiteSpace: 'normal' }}>{it.formula}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="muted">No detailed invoice items available.</p>
+          )}
         </div>
         <div className="panel">
           <h3>Tasks & Actions</h3>
