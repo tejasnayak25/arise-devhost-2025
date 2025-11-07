@@ -1,5 +1,5 @@
 # --- New endpoint: Get last month's invoice data for dashboard ---
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, File, UploadFile, HTTPException, Form, Body
 from fastapi.responses import JSONResponse
 import json as _json
@@ -13,7 +13,8 @@ import re
 import unicodedata
 import secrets
 from pathlib import PurePosixPath
-
+from apscheduler.schedulers.background import BackgroundScheduler
+import logging
 from backend.api.file_processor import process_uploaded_file
 from backend.api import emission_factors
 from backend.api.supabase_client import (
@@ -31,7 +32,8 @@ app.include_router(company_router)
 GEMINI_API_KEY = os.getenv("GOOGLE_AI_API")
 
 # Scheduler will be created at runtime only when enabled (not on serverless hosts like Vercel)
-scheduler = None
+scheduler = BackgroundScheduler()
+logger = logging.getLogger(__name__)
 
 
 
@@ -472,6 +474,7 @@ def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: s
 def generate_monthly_reports():
     """Generate a markdown report per company for the current month and upload to storage."""
     client = app.state.supabase
+    print("Generating monthly reports...")
     if not client:
         return
     # Fetch all companies
@@ -729,25 +732,13 @@ def generate_monthly_reports():
                 pass
             client.storage.from_("Default Bucket").upload(filename, pdf_bytes)
 
+        print(f"Uploaded report for company {company_id} to {filename}")
 
-# Start scheduler job: run once daily at 00:05 to ensure monthly file on first of month
+
 @app.on_event("startup")
 def start_scheduler():
-    # Only start a background scheduler when running in a non-serverless environment.
-    # Vercel sets the VERCEL environment variable in its runtime; skip scheduler there.
-    global scheduler
-    if os.getenv('VERCEL'):
-        # Do not start scheduler on Vercel (serverless)
-        return
-    try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-    except Exception:
-        return
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(generate_monthly_reports, 'cron', day=1, hour=0, minute=0)
+    scheduler.add_job(generate_monthly_reports, 'cron', hour=20, minute=44)
     scheduler.start()
-
-
 
 @app.get("/health/supabase")
 async def supabase_health(client = Depends(supabase_dep)):
