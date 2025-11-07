@@ -91,8 +91,8 @@ reporting and help Nordic companies track and reduce emissions proactively.
 
 - **Backend API:** `backend/main.py` (FastAPI app)
 - **Supabase client:** `backend/api/supabase_client.py`
-- **File processor:** `backend/api/file_processor.py` (CSV parsing & OCR API integration)
-- **OCR API:** `backend/api/ocr_api.py` (supports multiple OCR providers)
+- **File processor:** `backend/api/file_processor.py` (CSV parsing & OCR integration)
+- **OCR:** `backend/api/file_processor.py` (supports multiple OCR providers)
 - **Vercel entrypoint:** `backend/index.py` (for serverless deployment)
 
 **Authentication:**
