@@ -1,0 +1,20 @@
+[
+  {
+    "id": "CSRD-1",
+    "title": "Corporate Sustainability Reporting Directive (CSRD) - GHG Inventory",
+    "requirement": "Companies must report a GHG inventory covering Scopes 1-3 and disclose methodology and assumptions.",
+    "notes": "Ensure quantitative scope coverage and methodology transparency."
+  },
+  {
+    "id": "EU-TAX-1",
+    "title": "EU Taxonomy - Technical Screening Criteria Evidence",
+    "requirement": "For taxonomy-eligible activities, provide technical screening criteria evidence and quantitative metrics where applicable.",
+    "notes": "Collect CapEx/OpEx evidence and technical criteria documents."
+  },
+  {
+    "id": "CSRD-2",
+    "title": "CSRD - Double Materiality",
+    "requirement": "Perform double materiality assessment (financial + impact) and publish results in disclosures.",
+    "notes": "Document the process, stakeholders, and outcomes."
+  }
+]

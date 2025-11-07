@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { uploadFiles } from '../services/apiService'
 
-export default function DataUpload({ email, onComplete }) {
+export default function DataUpload({ email, company_id, onComplete }) {
   const [files, setFiles] = useState([])
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState({}) // { fileIndex: { status, message } }
@@ -22,7 +22,7 @@ export default function DataUpload({ email, onComplete }) {
     setUploadStatus({})
 
     try {
-      const results = await uploadFiles(files, email, (fileIndex, result) => {
+      const results = await uploadFiles(files, email, company_id, (fileIndex, result) => {
         setUploadStatus(prev => ({
           ...prev,
           [fileIndex]: {
@@ -74,7 +74,7 @@ export default function DataUpload({ email, onComplete }) {
           multiple 
           onChange={onFiles}
           disabled={uploading}
-          accept=".csv,.pdf,.png,.jpg,.jpeg,.gif,.bmp,.tiff"
+          accept=".csv,.xlsx,.pdf,.png,.jpg,.jpeg,.gif,.bmp,.tiff"
         />
         <button 
           className="btn" 

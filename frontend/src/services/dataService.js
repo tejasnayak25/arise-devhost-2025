@@ -1,73 +1,33 @@
-// Mock data and connectors to simulate ingestion and KPIs
 
-let connectors = [
-  { key: 'erp', name: 'ERP (Invoices)', description: 'Fetch invoices for Scope 1/2/3 extraction', connected: false },
-  { key: 'utility', name: 'Utility API', description: 'Electricity/gas consumption from grid provider', connected: true },
-  { key: 'bms', name: 'Building Meters', description: 'On-site energy meters via gateway', connected: false },
-]
+// All data is now fetched from backend API. No DB logic in frontend.
 
-let dbConnection = {
-  type: 'postgres',
-  host: '',
-  port: '5432',
-  database: '',
-  user: '',
-  password: '',
-  connected: false,
-  lastTest: ''
+
+// Fetch last month's invoice data for a company (including carbon emissions)
+export async function getLastMonthInvoiceData(company_id) {
+  const res = await fetch(`/api/company-invoices-current-month?company_id=${encodeURIComponent(company_id)}`);
+  if (!res.ok) throw new Error('Failed to fetch invoice data');
+  return await res.json();
 }
 
-export function listConnectors() {
-  return connectors
+
+// These now take invoiceData as input (from getLastMonthInvoiceData)
+// Focus on carbon emissions for dashboard
+export function getLatestEmissionsTimeSeries(invoiceData) {
+  // Use invoiceData.time_series (object: {YYYY-MM-DD: emissions})
+  if (!invoiceData || !invoiceData.time_series) return [];
+  // Convert to array sorted by date
+  return Object.entries(invoiceData.time_series)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, value]) => ({ date, tco2e: value }));
 }
 
-export function connectSource(key) {
-  connectors = connectors.map(c => c.key === key ? { ...c, connected: true } : c)
-}
-
-export function disconnectSource(key) {
-  connectors = connectors.map(c => c.key === key ? { ...c, connected: false } : c)
-}
-
-export function getDbConnection() {
-  return dbConnection
-}
-
-export function updateDbConnection(next) {
-  dbConnection = { ...dbConnection, ...next }
-  return dbConnection
-}
-
-export function connectDb() {
-  // naive validation
-  const valid = dbConnection.host && dbConnection.database && dbConnection.user
-  dbConnection = { ...dbConnection, connected: !!valid }
-  return dbConnection.connected
-}
-
-export function disconnectDb() {
-  dbConnection = { ...dbConnection, connected: false }
-}
-
-export function testDbConnection() {
-  const ok = !!(dbConnection.host && dbConnection.port && dbConnection.user)
-  const timestamp = new Date().toLocaleString()
-  dbConnection = { ...dbConnection, lastTest: `${ok ? 'OK' : 'Failed'} @ ${timestamp}` }
-  return ok
-}
-
-export function getLatestEmissionsTimeSeries() {
-  // Synthetic monthly tCO2e trend
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-  const base = 120
-  return months.map((m, i) => ({ month: m, tco2e: Math.round((base + Math.sin(i/2)*12 - i*1.4) * 10)/10 }))
-}
-
-export function getAggregatedKPIs() {
+export function getAggregatedKPIs(invoiceData) {
+  if (!invoiceData) return [];
+  // If backend provides total_emissions, use it. Otherwise, fallback to spend.
   return [
-    { label: 'YTD Emissions', value: '1,042 tCO₂e', delta: '▼ 6.2% vs LY' },
-    { label: 'Renewables Share', value: '38%', delta: '▲ +8 pts vs LY' },
-    { label: 'Data Completeness', value: '72%', delta: '▲ +12 pts MoM' },
-  ]
+    { label: 'Last Month Emissions', value: invoiceData.total_emissions ? `${invoiceData.total_emissions} tCO₂e` : '-', delta: '' },
+    { label: 'Invoices', value: invoiceData.raw ? invoiceData.raw.length : 0, delta: '' },
+    { label: 'Spend', value: invoiceData.total_spend ? `${invoiceData.total_spend} $` : '-', delta: '' },
+  ];
 }
 

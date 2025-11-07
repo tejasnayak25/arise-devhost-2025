@@ -2,23 +2,25 @@ import React, { useState, useEffect } from 'react'
 import DataUpload from '../shared/DataUpload'
 import DatabaseLink from '../shared/DatabaseLink'
 import ConfirmModal from '../shared/ConfirmModal'
-import { getDbConnection, updateDbConnection, connectDb, disconnectDb, testDbConnection } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext'
 import { getFilesFromStorage } from '../services/apiService'
+import { getUserCompany } from '../services/companyService'
+
 
 export default function DataSources() {
   const [showAddSource, setShowAddSource] = useState(false)
   const [selectedSourceType, setSelectedSourceType] = useState(null) // 'file' | 'database' | null
-  const [dbConn, setDbConn] = useState(getDbConnection())
 
   const { user } = useAuth()
-
+  const [company, setCompany] = useState(undefined); // undefined = loading, null = not in company
   const [connectedSources, setConnectedSources] = useState([])
 
   useEffect(() => {
-    async function fetchFiles() {
+    async function fetchCompanyAndFiles() {
       if (user?.email) {
         try {
+          const companyInfo = await getUserCompany(user.email);
+          setCompany(companyInfo);
           const files = await getFilesFromStorage(user.email)
           let fileSources = files.map((file) => ({
             id: `file-${file.id}`,
@@ -31,12 +33,12 @@ export default function DataSources() {
           fileSources = fileSources.filter(i => i.size !== 0);
           setConnectedSources((prev) => [...fileSources])
         } catch (error) {
-          console.error('Error fetching files from storage:', error)
+          setCompany(null);
+          console.error('Error fetching company or files:', error)
         }
       }
     }
-
-    fetchFiles()
+    fetchCompanyAndFiles();
   }, [user])
 
   function handleAddSource(type) {
@@ -109,8 +111,6 @@ export default function DataSources() {
   }
 
   function handleDatabaseConnect() {
-    connectDb()
-    setDbConn(getDbConnection())
     // Add to connected sources
     const newId = `db-${Date.now()}`
     const newSource = {
@@ -168,7 +168,7 @@ export default function DataSources() {
             <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
               Upload invoices, meter readings, and Scope 3 data files
             </p>
-            <DataUpload email={user.email} onComplete={handleFileUploadComplete} />
+            <DataUpload email={user.email} company_id={company?.id} onComplete={handleFileUploadComplete} />
           </div>
         )}
 
@@ -187,8 +187,8 @@ export default function DataSources() {
               value={dbConn}
               onChange={(next) => setDbConn(updateDbConnection(next))}
               onConnect={handleDatabaseConnect}
-              onDisconnect={() => { disconnectDb(); setDbConn(getDbConnection()) }}
-              onTest={() => { testDbConnection(); setDbConn(getDbConnection()) }}
+              onDisconnect={() => { setDbConn(null) }} // Adjusted to remove DB connection
+              onTest={() => { /* No longer testing DB connection */ }}
             />
           </div>
         )}

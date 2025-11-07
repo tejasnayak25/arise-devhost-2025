@@ -55,20 +55,30 @@ export async function uploadFile(file, email) {
   }
 }
 
-export function parseInvoice(text) {
-  console.log(result.text);
-  return new Promise((resolve, reject) => {
-    fetch("/api/parse-invoice",
-      {
-        method: "POST",
-        body: text
-      }
-    )
-    .then(res => res.json())
-    .then(data => {
-      resolve(data);
+/**
+ * Parse invoice using backend API
+ * @param {string} text - The text content of the invoice
+ * @returns {Promise<Object>} - Parsed invoice data
+ */
+export async function parseInvoice(text, company_id, storage_path) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/parse-invoice`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ text, company_id, storage_path })
     });
-  });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || `Failed to parse invoice: ${response.statusText}`);
+    }
+    // Always return the parsed invoice data (array or object)
+    return await response.json();
+  } catch (error) {
+    console.error('Error parsing invoice:', error);
+    throw error;
+  }
 }
 
 /**
@@ -77,27 +87,32 @@ export function parseInvoice(text) {
  * @param {Function} onProgress - Callback for progress updates (fileIndex, result)
  * @returns {Promise<Array>} - Array of upload results
  */
-export async function uploadFiles(files, email, onProgress) {
-  const results = []
-  
+export async function uploadFiles(files, email, company_id, onProgress) {
+  const results = [];
   for (let i = 0; i < files.length; i++) {
     try {
-      const result = await uploadFile(files[i], email)
-      const invoice = await parseInvoice(result.text);
-      console.log(invoice);
-      results.push({ file: files[i], success: true, data: result })
+      const result = await uploadFile(files[i], email);
+      let invoiceData = null;
+      if (result) {
+        console.log(result)
+        if(result.type === "csv") {
+          invoiceData = await parseInvoice(JSON.stringify(result), company_id, result.storage_path);
+        } else if(result.text) {
+          invoiceData = await parseInvoice(result.text, company_id, result.storage_path);
+        }
+      }
+      results.push({ file: files[i], success: true, data: result, invoice: invoiceData });
       if (onProgress) {
-        onProgress(i, { file: files[i], success: true, data: result })
+        onProgress(i, { file: files[i], success: true, data: result, invoice: invoiceData });
       }
     } catch (error) {
-      results.push({ file: files[i], success: false, error: error.message })
+      results.push({ file: files[i], success: false, error: error.message });
       if (onProgress) {
-        onProgress(i, { file: files[i], success: false, error: error.message })
+        onProgress(i, { file: files[i], success: false, error: error.message });
       }
     }
   }
-  
-  return results
+  return results;
 }
 
 /**
