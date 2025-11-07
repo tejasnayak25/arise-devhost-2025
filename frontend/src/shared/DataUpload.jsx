@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import { uploadFiles } from '../services/apiService'
 
 export default function DataUpload({ email, company_id, onComplete }) {
@@ -6,12 +6,19 @@ export default function DataUpload({ email, company_id, onComplete }) {
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState({}) // { fileIndex: { status, message } }
   const [error, setError] = useState(null)
+  const fileInputRef = useRef(null)
 
   function onFiles(e) {
     const next = Array.from(e.target.files || [])
     setFiles((prev) => [...prev, ...next])
     setError(null)
     setUploadStatus({})
+    // Clear the native file input so selecting the same file again will fire onChange
+    try {
+      e.target.value = ''
+    } catch (err) {
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
   }
 
   async function handleProcess() {
@@ -46,6 +53,8 @@ export default function DataUpload({ email, company_id, onComplete }) {
         // Clear files after successful upload
         setFiles([])
         setUploadStatus({})
+        // Reset native input so user can re-upload the same files if desired
+        if (fileInputRef.current) fileInputRef.current.value = ''
       } else {
         setError(`${successCount}/${files.length} files processed successfully. Some files failed.`)
       }
@@ -58,11 +67,21 @@ export default function DataUpload({ email, company_id, onComplete }) {
   }
 
   function removeFile(index) {
-    setFiles(prev => prev.filter((_, i) => i !== index))
-    setUploadStatus(prev => {
-      const next = { ...prev }
-      delete next[index]
-      return next
+    // Remove the file and remap uploadStatus keys so statuses stay aligned with file indices
+    setFiles(prevFiles => {
+      const newFiles = prevFiles.filter((_, i) => i !== index)
+      setUploadStatus(prevStatus => {
+        const next = {}
+        newFiles.forEach((_, i) => {
+          // old index maps to new index; if removed index <= i then oldIndex = i+1 else oldIndex = i
+          const oldIndex = i >= index ? i + 1 : i
+          if (prevStatus && prevStatus[oldIndex]) next[i] = prevStatus[oldIndex]
+        })
+        return next
+      })
+      // Clear native input to allow re-selecting same file
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return newFiles
     })
   }
 
@@ -70,6 +89,7 @@ export default function DataUpload({ email, company_id, onComplete }) {
     <div>
       <div style={{ display: 'grid', gap: 10, gridTemplateColumns: '1fr auto' }}>
         <input 
+          ref={fileInputRef}
           type="file" 
           multiple 
           onChange={onFiles}
@@ -111,8 +131,9 @@ export default function DataUpload({ email, company_id, onComplete }) {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
+                  gap: 5,
                   padding: '6px 10px',
-                  backgroundColor: '#f5f5f5',
+                  backgroundColor: 'var(--bg-800)',
                   borderRadius: 4,
                   fontSize: 12
                 }}
@@ -135,7 +156,7 @@ export default function DataUpload({ email, company_id, onComplete }) {
                     style={{
                       marginLeft: 8,
                       padding: '2px 6px',
-                      fontSize: 11,
+                      fontSize: 25,
                       border: 'none',
                       background: 'transparent',
                       color: '#999',

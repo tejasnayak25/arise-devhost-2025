@@ -70,6 +70,145 @@ def _parse_iso(ts: str):
         except Exception:
             return None
 
+
+def _parse_iso(ts: str):
+    """Robustly parse many date/time formats into a naive UTC datetime.
+
+    Accepts:
+    - ISO 8601 strings (with or without Z)
+    - Month name + year (e.g., 'February 2025' -> 2025-02-01)
+    - Common variants like 'Feb 3, 2025', '2025-02', '02/2025', '20250203'
+    - Epoch seconds (10 or 13 digit)
+    - Uses python-dateutil if available for flexible parsing
+
+    Returns a datetime (naive, UTC) or None on failure.
+    """
+    if not ts:
+        return None
+
+    # If already a datetime or date
+    try:
+        if isinstance(ts, datetime):
+            dt = ts
+            # convert aware -> UTC naive
+            if getattr(dt, 'tzinfo', None):
+                try:
+                    dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                except Exception:
+                    dt = dt.replace(tzinfo=None)
+            return dt
+        # support date objects
+        from datetime import date as _date
+        if isinstance(ts, _date):
+            return datetime(ts.year, ts.month, ts.day)
+    except Exception:
+        pass
+
+    s = str(ts).strip()
+    if not s:
+        return None
+
+    # Normalize common Z suffix
+    if s.endswith('Z'):
+        s = s.replace('Z', '+00:00')
+
+    # 1) Try fromisoformat (fast path)
+    try:
+        dt = datetime.fromisoformat(s)
+        if getattr(dt, 'tzinfo', None):
+            try:
+                dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+            except Exception:
+                dt = dt.replace(tzinfo=None)
+        return dt
+    except Exception:
+        pass
+
+    # 2) Try python-dateutil if available (very flexible)
+    try:
+        from dateutil import parser as _du_parser
+        try:
+            # fuzzy parsing helps with extraneous text like 'Invoice date: February 2025'
+            dt = _du_parser.parse(s, fuzzy=True)
+            if getattr(dt, 'tzinfo', None):
+                try:
+                    dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                except Exception:
+                    dt = dt.replace(tzinfo=None)
+            return dt
+        except Exception:
+            pass
+    except Exception:
+        # dateutil not installed; continue to fallback heuristics
+        pass
+
+    # 3) Numeric epoch (10 or 13 digits)
+    if re.fullmatch(r"\d{10}(?:\d{3})?", s):
+        try:
+            iv = int(s)
+            if len(s) == 13:
+                iv = iv / 1000.0
+            dt = datetime.utcfromtimestamp(iv)
+            return dt
+        except Exception:
+            pass
+
+    # 4) Try a list of common strptime formats
+    formats = [
+        '%B %Y',        # February 2025
+        '%b %Y',        # Feb 2025
+        '%B %d, %Y',    # February 3, 2025
+        '%b %d, %Y',    # Feb 3, 2025
+        '%Y-%m',        # 2025-02
+        '%Y/%m',        # 2025/02
+        '%m/%Y',        # 02/2025
+        '%m-%Y',        # 02-2025
+        '%Y-%m-%d',     # 2025-02-03
+        '%d/%m/%Y',     # 03/02/2025
+        '%d-%m-%Y',     # 03-02-2025
+        '%Y.%m.%d',     # 2025.02.03
+        '%Y%m%d',       # 20250203
+        '%m%d%Y',       # 02032025
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt
+        except Exception:
+            continue
+
+    # 5) Heuristics: Month name + year using regex
+    m = re.search(r'([A-Za-z]+)\s+(\d{4})', s)
+    if m:
+        month_name = m.group(1)
+        year = int(m.group(2))
+        try:
+            # try abbreviated month first
+            month = datetime.strptime(month_name[:3], '%b').month
+        except Exception:
+            try:
+                month = datetime.strptime(month_name, '%B').month
+            except Exception:
+                month = None
+        if month:
+            return datetime(year, month, 1)
+
+    # 6) mm/yyyy or yyyy
+    m2 = re.search(r'(\d{1,2})[\-/](\d{4})', s)
+    if m2:
+        mth = int(m2.group(1))
+        yr = int(m2.group(2))
+        if 1 <= mth <= 12:
+            return datetime(yr, mth, 1)
+
+    m3 = re.fullmatch(r'(\d{4})', s)
+    if m3:
+        yr = int(m3.group(1))
+        return datetime(yr, 1, 1)
+
+    # Could not parse
+    return None
+
 def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: str):
     """Fetch sensors and their activity for a company between start_iso and end_iso and compute estimated emissions in kg CO2e.
     Returns: (total_sensor_emissions_kg, sensors_summary_list)
@@ -784,16 +923,34 @@ async def parse_invoice(payload:dict = Body(...)):
             to_insert = []
             for row in items:
                 # Only insert if at least one field is present and company_id is provided
-                if payload['company_id'] and any(row.get(f) is not None for f in ("quantity", "price", "unit", "type")):
+                company_id = payload.get('company_id')
+                storage_path = payload.get('storage_path')
+                if company_id and any(row.get(f) is not None for f in ("quantity", "price", "unit", "type")):
+                    # Normalize date: accept single dates or ranges like '01 Feb 2025- 28 Feb 2025'
+                    raw_date = row.get('date') or row.get('invoice_date')
+                    date_str = datetime.utcnow().date().isoformat()
+                    try:
+                        if raw_date:
+                            s = str(raw_date).strip()
+                            # If it's a range like '01 Feb 2025- 28 Feb 2025', split and take the first part
+                            parts = re.split(r"\s*[-–—]\s*", s)
+                            first = parts[0] if parts and parts[0] else s
+                            dt = _parse_iso(first)
+                            if dt:
+                                date_str = dt.date().isoformat()
+                    except Exception:
+                        # fallback to today's date
+                        date_str = datetime.utcnow().date().isoformat()
+
                     to_insert.append({
                         "name": row.get("name", None),
                         "quantity": row.get("quantity", None),
                         "price": row.get("price", None),
                         "unit": row.get("unit", None),
                         "type": row.get("type", None),
-                        "date": row.get("date", datetime.utcnow().date().isoformat()),
-                        "company_id": payload['company_id'],
-                        "invoice_path": payload["storage_path"]
+                        "date": date_str,
+                        "company_id": company_id,
+                        "invoice_path": storage_path
                     })
             if to_insert:
                 insert_result = supabase.table("invoices").insert(to_insert).execute()
