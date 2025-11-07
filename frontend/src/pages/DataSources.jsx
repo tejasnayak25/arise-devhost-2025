@@ -193,7 +193,7 @@ export default function DataSources() {
 
   return (
     <div className="stack">
-      <h1 style={{ margin: '0 0 20px', fontSize: 28, fontWeight: 700, color: "black" }}>Data Sources</h1>
+      <h1 style={{ margin: '0 0 20px', fontSize: 28, fontWeight: 700, color: "black", fontFamily: "Poppins" }}>Data Sources</h1>
 
       <div className="panel">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: showAddSource || selectedSourceType ? 16 : 0 }}>
@@ -329,7 +329,7 @@ export default function DataSources() {
                       style={{ padding: '6px 12px', fontSize: 12 }} 
                       onClick={() => requestRemoveSource(source.id, source.data, source.name, source.type)}
                     >
-                      Remove
+                      Disconnect
                     </button>
                   </td>
                 </tr>

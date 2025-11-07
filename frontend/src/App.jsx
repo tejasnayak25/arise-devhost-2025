@@ -40,8 +40,9 @@ function AppContent() {
   }
 
   return (
-    <div className="app-root">
-      <aside className="app-sidebar">
+    <div className="app-root" style={{display: user ? "grid" : "flex", justifyContent: user ? "start" : "center"}}>
+      <img src="/poster.png" alt="Background Pattern" className="app-bg" />
+      {user ? <aside className="app-sidebar">
         {/* <div className="brand" style={{ marginBottom: 16 }}>ESG Automation</div> */}
         <div style={{ width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
           <img src="/logo.png" alt="Logo" style={{width: "60%", objectFit: "cover", aspectRatio: "16 / 6"}} />
@@ -79,7 +80,7 @@ function AppContent() {
             </div>
           )}
         </div>
-      </aside>
+      </aside> : <div style={{width: 0, position: "relative"}}></div>}
       <div className="app-content">
         <main className="app-main">
           <Routes>
@@ -119,7 +120,7 @@ function AppContent() {
             />
           </Routes>
         </main>
-        <footer className="app-footer">© {new Date().getFullYear()} ESG Automation</footer>
+        <footer className="app-footer">© {new Date().getFullYear()} Cord.AI</footer>
       </div>
     </div>
   )

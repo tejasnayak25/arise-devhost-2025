@@ -32,7 +32,7 @@ body {
 
 .app-root { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100%; gap: 24px; }
 .app-sidebar {
-  display: flex; flex-direction: column; gap: 12px; padding: 20px; background: linear-gradient(180deg, var(--bg-900), var(--bg-800));
+  position: relative; display: flex; flex-direction: column; gap: 12px; padding: 20px; background: linear-gradient(180deg, var(--bg-900), var(--bg-800));
   border-right: 1px solid var(--border-color); position: sticky; top: 0; height: 100vh;
 }
 .brand { font-weight: 800; letter-spacing: .3px; color: var(--brand); font-size: 18px }
@@ -42,14 +42,14 @@ body {
 .nav a:hover { background: rgba(37,99,235,0.06); color: var(--text); }
 .nav a.active { color: var(--text); background: rgba(37,99,235,0.08); }
 
-.app-content { display: flex; flex-direction: column; min-width: 0; }
+.app-content { position: relative; display: flex; flex-direction: column; min-width: 0; }
 .app-main { flex: 1; padding: 28px; max-width: 1200px; margin: 0 auto; width: 100%; }
 .app-footer { padding: 18px; text-align: center; color: #000; border-top: 1px solid rgba(255,255,255,0.03); }
 
 .grid { display: grid; gap: 18px; }
 .grid.cols-2 { grid-template-columns: 1fr 1fr; }
 .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
-.panel { background: linear-gradient(180deg, rgba(8,12,18,0.88), rgba(12,18,28,0.86)); border: 1px solid var(--border-color-dark); border-radius: 12px; padding: 18px; box-shadow: 0 10px 30px rgba(2,6,12,0.75); backdrop-filter: blur(6px); position: relative; border: 1px solid var(--border-color); }
+.panel { background: linear-gradient(180deg, rgba(8,12,18,0.88), rgba(12,18,28,0.86)); border: 1px solid var(--border-color-dark); border-radius: 12px; padding: 18px; box-shadow: 0 5px 30px rgba(2,6,12,0.75); backdrop-filter: blur(6px); position: relative; border: 1px solid var(--border-color); }
 .panel::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-top-left-radius: 12px; border-bottom-left-radius: 12px; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); }
 
 /* Accent helpers */
@@ -99,6 +99,20 @@ th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid rgba(255
 th { color: var(--muted); font-weight: 700; font-size: 13px; }
 td { color: var(--text); font-size: 14px }
 tbody tr:hover { background: rgba(255,255,255,0.01); }
+
+/* Prevent wide tables from expanding the layout and pushing sidebars out of view.
+  - Ensure main/content panels can shrink (min-width:0) inside CSS grid/flex containers.
+  - Allow table cells to break long words and wrap where possible.
+  - If a table really needs horizontal room, wrap it with `.table-wrapper` to enable scrolling. */
+.app-main, .app-content, .panel, .layout-two > * { min-width: 0; }
+
+/* Wrap long strings in table cells instead of forcing the parent to grow */
+th, td { overflow-wrap: anywhere; word-break: break-word; }
+
+/* Helper: if you need the table to be scrollable rather than resize the layout,
+  wrap the table in a container with class `table-wrapper` (see DataSources/Reports pages). */
+.table-wrapper { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrapper table { width: max-content; min-width: 100%; }
 
 input, select, textarea { width: 100%; background: var(--glass); border: 1px solid rgba(255,255,255,0.06); color: var(--text); padding: 10px; border-radius: 8px; height: 45px; }
 label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
@@ -157,4 +171,14 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px
 .chat-form button {
   height: 47px;
   margin-top: 5px;
+}
+
+.app-bg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.4;
+  position: fixed;
+  top: 0;
+  left: 0;
 }

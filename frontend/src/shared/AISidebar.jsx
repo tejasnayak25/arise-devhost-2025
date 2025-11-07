@@ -66,7 +66,7 @@ export default function AISidebar({ user, company }) {
     setLoading(true);
     try {
       let aiReply = '';
-      if (/analy[sz]e|csrd|report|emission|carbon|footprint|summary|insight/i.test(text)) {
+      if (/analy[sz]e|csrd|invoice|report|emission|carbon|footprint|summary|insight/i.test(text)) {
         const res = await fetch(`/api/analyze-current-month-report?company_id=${encodeURIComponent(company?.id)}`, {
           method: 'POST',
           body: text

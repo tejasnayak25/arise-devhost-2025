@@ -133,7 +133,7 @@ export default function Dashboard() {
                 <th>Unit</th>
                 <th>Factor (kg CO₂e/unit)</th>
                 <th>Emissions (kg CO₂e)</th>
-                <th>Calculation</th>
+                {/* <th>Calculation</th> */}
               </tr>
             </thead>
             <tbody>
@@ -147,7 +147,7 @@ export default function Dashboard() {
                     unit: it.unit || 'item',
                     factor: it.factor ?? null,
                     emissions: it.emissions ?? null,
-                    formula: it.formula || ''
+                    // formula: it.formula || ''
                   }));
 
                 // Normalize sensor summaries into the same shape
@@ -162,7 +162,7 @@ export default function Dashboard() {
                     unit: 'kWh',
                     factor: factor,
                     emissions: emissions,
-                    formula: factor ? `${energy} * ${factor} = ${emissions}` : `emissions: ${emissions} kg CO₂e`
+                    // formula: factor ? `${energy} * ${factor} = ${emissions}` : `emissions: ${emissions} kg CO₂e`
                   }
                 })
 
@@ -179,7 +179,7 @@ export default function Dashboard() {
                 if (filtered.length === 0) {
                   return (
                     <tr>
-                      <td colSpan={6} style={{ textAlign: 'center', color: '#666' }}>No items match your search.</td>
+                      <td colSpan={5} style={{ textAlign: 'center', color: '#666' }}>No items match your search.</td>
                     </tr>
                   );
                 }
@@ -191,7 +191,7 @@ export default function Dashboard() {
                     <td>{it.unit || '-'}</td>
                     <td>{it.factor ?? '-'}</td>
                     <td>{it.emissions ?? '-'}</td>
-                    <td style={{ maxWidth: 400, whiteSpace: 'normal' }}>{it.formula}</td>
+                    {/* <td style={{ maxWidth: 400, whiteSpace: 'normal' }}>{it.formula}</td> */}
                   </tr>
                 ))
               })()}

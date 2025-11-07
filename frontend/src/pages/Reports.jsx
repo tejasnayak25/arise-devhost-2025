@@ -39,7 +39,7 @@ export default function Reports() {
     <div className="panel">
       <h3>Generated Reports</h3>
       <p className="muted">Monthly reports are generated automatically and stored.</p>
-      <ul style={{display: "flex", flexDirection: "column", gap: "10px"}}>
+      <ul style={{display: "flex", flexDirection: "column", gap: "10px", listStyleType: "none", paddingLeft: 0}}>
         {reports.length === 0 && <li className="muted">No reports available yet.</li>}
         {reports.map((r, i) => (
           <li key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>

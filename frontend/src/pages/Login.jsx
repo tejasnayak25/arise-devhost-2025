@@ -60,10 +60,13 @@ export default function Login() {
       <div className="panel" style={{
         width: '100%',
         maxWidth: 400,
-        padding: 32
+        padding: 32,
+        marginTop: -60
       }}>
-        <h1 className="brand" style={{ margin: '0 0 8px', fontSize: 24, fontWeight: 700 }}>ESG Automation</h1>
-        <p className="muted" style={{ margin: '0 0 24px', fontSize: 14 }}>Sign in to your account</p>
+        <div style={{ width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
+          <img src="/logo.png" alt="Logo" style={{width: "55%", objectFit: "cover", aspectRatio: "16 / 4.5"}} />
+        </div>
+        <p className="muted" style={{ margin: '0 0 24px', fontSize: 14, textAlign: "center" }}>Sign in to your account</p>
 
         <form onSubmit={handleSubmit}>
           {error && (
@@ -112,7 +115,7 @@ export default function Login() {
           </button>
         </form>
 
-        <div style={{ 
+        {/* <div style={{ 
           display: 'flex', 
           alignItems: 'center', 
           margin: '24px 0',
@@ -149,7 +152,7 @@ export default function Login() {
               Continue with Google
             </>
           )}
-        </button>
+        </button> */}
 
         <div style={{ textAlign: 'center', fontSize: 13 }} className="muted">
           Don't have an account?{' '}
