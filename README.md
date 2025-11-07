@@ -28,19 +28,7 @@ reporting and help Nordic companies track and reduce emissions proactively.
    ```
    SUPABASE_URL=<your-project-url>
    SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
-   
-   # OCR API Configuration (choose one)
-   OCR_PROVIDER=ocrspace  # or "google_vision"
-   OCRSPACE_API_KEY=<your-ocrspace-key>  # Optional for free tier
-   # OR for Google Vision:
-   # GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-   # OR
-   # GOOGLE_VISION_API_KEY=<your-api-key>
    ```
-   
-   **OCR Provider Options:**
-   - **OCR.space** (default, free tier available): Set `OCR_PROVIDER=ocrspace` and optionally `OCRSPACE_API_KEY`
-   - **Google Cloud Vision**: Set `OCR_PROVIDER=google_vision` and provide credentials
 
 2. **Install Python dependencies:**
 
@@ -48,8 +36,6 @@ reporting and help Nordic companies track and reduce emissions proactively.
    cd backend
    pip install -r requirements.txt
    ```
-   
-   **Note**: OCR uses external APIs (no local model downloads required). See OCR configuration above.
 
 3. **Run the API server:**
 
@@ -60,7 +46,7 @@ reporting and help Nordic companies track and reduce emissions proactively.
 
    Or if you're in the `backend/` directory:
    ```bash
-   cd ..  # Go to project root
+   cd ..
    uvicorn backend.main:app --reload
    ```
 
@@ -99,15 +85,7 @@ reporting and help Nordic companies track and reduce emissions proactively.
 - `GET /health/supabase` - Health check for Supabase connection
 - `POST /api/upload` - File upload endpoint
   - **CSV files**: Parses and returns structured data as JSON
-  - **Other files** (PDF, images): Uses OCR API to extract text (no local dependencies)
-  - **OCR Providers**: Supports OCR.space (free tier) and Google Cloud Vision
-  - Example request:
-    ```bash
-    curl -X POST "http://localhost:8000/api/upload" \
-      -H "accept: application/json" \
-      -H "Content-Type: multipart/form-data" \
-      -F "file=@yourfile.csv"
-    ```
+  - **Other files** (PDF, images): Uses OCR to extract text
 
 ### Code Structure
 
@@ -116,13 +94,6 @@ reporting and help Nordic companies track and reduce emissions proactively.
 - **File processor:** `backend/api/file_processor.py` (CSV parsing & OCR API integration)
 - **OCR API:** `backend/api/ocr_api.py` (supports multiple OCR providers)
 - **Vercel entrypoint:** `backend/index.py` (for serverless deployment)
-
-**OCR Technology:**
-- Uses **OCR APIs** (no local dependencies or model downloads)
-- Supports **OCR.space** (free tier available) and **Google Cloud Vision**
-- Uses **PyMuPDF** for PDF handling (pure Python)
-- Works in serverless environments like Vercel
-- Configure via `OCR_PROVIDER` environment variable
 
 **Authentication:**
 - Uses **Supabase Auth** for user authentication
@@ -181,9 +152,6 @@ Set these in the project settings (Production, Preview, Development):
 **Backend (Python API):**
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_ANON_KEY`)
-- `OCR_PROVIDER` (default: `ocrspace`)
-- `OCRSPACE_API_KEY` (optional, for OCR.space free tier)
-- Or for Google Vision: `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_VISION_API_KEY`
 
 **Frontend (React):**
 - `VITE_SUPABASE_URL` (same as `SUPABASE_URL`)
