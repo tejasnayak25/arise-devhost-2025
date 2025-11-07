@@ -56,6 +56,135 @@ def supabase_dep():
 	return app.state.supabase
 
 
+def _parse_iso(ts: str):
+    try:
+        if not ts:
+            return None
+        # handle Z suffix
+        if ts.endswith('Z'):
+            ts = ts.replace('Z', '+00:00')
+        return datetime.fromisoformat(ts)
+    except Exception:
+        try:
+            return datetime.strptime(ts, '%Y-%m-%dT%H:%M:%S')
+        except Exception:
+            return None
+
+
+def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: str):
+    """Fetch sensors and their activity for a company between start_iso and end_iso and compute estimated emissions in kg CO2e.
+    Returns: (total_sensor_emissions_kg, sensors_summary_list)
+    sensors_summary_list: [{ device_id, energy_kwh, emissions_kg, cycles, on_hours }]
+    """
+    try:
+        # Fetch sensors tied to company_id
+        sres = client.table('sensors').select('*').eq('company_id', company_id).execute()
+        sensors = sres.data or []
+    except Exception:
+        sensors = []
+
+    if not sensors:
+        return 0, []
+
+    # Map device_id to sensor metadata
+    sensor_map = {}
+    device_ids = []
+    for s in sensors:
+        did = s.get('device_id') or s.get('id')
+        if not did:
+            continue
+        device_ids.append(did)
+        sensor_map[did] = {
+            'power_kW': float(s.get('power_kW') or 0),
+            'emission_factor': float(s.get('emission_factor') or 0),
+            'meta': s
+        }
+
+    # Fetch activity entries for this company in range
+    try:
+        ares = client.table('sensors_activity').select('*').eq('company_id', company_id).gte('session_start', start_iso).lt('session_end', end_iso).execute()
+        activities = ares.data or []
+    except Exception:
+        activities = []
+
+    # Group activities by device_id
+    by_device = {}
+    for a in activities:
+        did = a.get('device_id') or a.get('device') or (a.get('sensor_id') and str(a.get('sensor_id')))
+        if not did:
+            continue
+        by_device.setdefault(did, []).append(a)
+
+    total_emissions = 0.0
+    summaries = []
+
+    for did, acts in by_device.items():
+        meta = sensor_map.get(did, {})
+        power_kw = float(meta.get('power_kW') or 0)
+        factor = float(meta.get('emission_factor') or 0)
+
+        # Calculate energy_kwh either from explicit energy fields or by ON/OFF events
+        energy_kwh = 0.0
+        events = []
+        for a in acts:
+            # direct energy reporting
+            e = None
+            for k in ('energy_kwh', 'kwh', 'energy'):
+                if a.get(k) is not None:
+                    try:
+                        e = float(a.get(k))
+                    except Exception:
+                        e = None
+                    break
+            if e is not None:
+                energy_kwh += e
+                continue
+            # state-based events
+            state = (a.get('state') or '').upper() if a.get('state') else None
+            ts = a.get('timestamp') or a.get('time') or a.get('created_at')
+            dt = _parse_iso(ts) if ts else None
+            if state in ('ON', 'OFF') and dt:
+                events.append({'ts': dt, 'state': state})
+
+        # If we have events, compute ON durations
+        events.sort(key=lambda x: x['ts'])
+        on_since = None
+        cycles = 0
+        on_ms = 0
+        for ev in events:
+            if ev['state'] == 'ON':
+                if on_since is None:
+                    on_since = ev['ts']
+            elif ev['state'] == 'OFF':
+                if on_since:
+                    on_ms += (ev['ts'] - on_since).total_seconds() * 1000
+                    on_since = None
+                    cycles += 1
+        # if still ON at the end of period, assume until end_iso
+        if on_since:
+            end_dt = _parse_iso(end_iso)
+            if end_dt:
+                on_ms += (end_dt - on_since).total_seconds() * 1000
+
+        on_hours = on_ms / (1000 * 60 * 60)
+        if on_hours and power_kw:
+            energy_kwh += on_hours * power_kw
+
+        emissions_kg = energy_kwh * factor
+        total_emissions += emissions_kg
+
+        summaries.append({
+            'device_id': did,
+            'energy_kwh': round(energy_kwh, 6),
+            'emissions_kg': round(emissions_kg, 6),
+            'cycles': cycles,
+            'on_hours': round(on_hours, 4),
+            'meta': meta.get('meta')
+        })
+
+    return total_emissions, summaries
+
+
 def generate_monthly_reports():
     """Generate a markdown report per company for the current month and upload to storage."""
     client = app.state.supabase
@@ -274,6 +403,33 @@ def generate_monthly_reports():
                 c.showPage()
                 y = height - 50
                 c.setFont("Helvetica", 9)
+
+        # Add sensors summary (if any)
+        try:
+            start_iso = first_of_this_month.isoformat()
+            end_iso = next_month.isoformat()
+            sensor_total, sensor_summaries = compute_sensor_emissions(client, company_id, start_iso, end_iso)
+            if sensor_summaries:
+                c.setFont("Helvetica-Bold", 12)
+                if y < 80:
+                    c.showPage()
+                    y = height - 50
+                c.drawString(40, y, "Sensor-derived emissions")
+                y -= 18
+                c.setFont("Helvetica", 9)
+                for s in sensor_summaries:
+                    line = f"- {s.get('device_id')}: {s.get('emissions_kg')} kg CO2e ({s.get('energy_kwh')} kWh)"
+                    c.drawString(44, y, line)
+                    y -= 12
+                    if y < 60:
+                        c.showPage()
+                        y = height - 50
+                        c.setFont("Helvetica", 9)
+                y -= 8
+                c.drawString(44, y, f"Sensor total emissions: {round(sensor_total,3)} kg CO2e")
+                y -= 14
+        except Exception:
+            pass
 
         c.save()
         pdf_bytes = pdf_buffer.getvalue()
@@ -561,9 +717,22 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
             val = quantity_kg if isinstance(quantity_kg, (int, float)) else 0
             time_series[day] = time_series.get(day, 0) + val
 
+    # Include sensor-derived emissions for the same period
+    sensor_total = 0
+    sensor_summaries = []
+    try:
+        start_iso = first_of_this_month.isoformat()
+        end_iso = next_month.isoformat()
+        sensor_total, sensor_summaries = compute_sensor_emissions(client, company_id, start_iso, end_iso)
+    except Exception:
+        sensor_total = 0
+        sensor_summaries = []
+
     # Compose response
     return JSONResponse(content={
         "total_emissions": total_emissions,
+        "sensor_emissions": sensor_total,
+        "sensor_summaries": sensor_summaries,
         "total_spend": total_spend,
         "item_counts": item_counts,
         "time_series": time_series,
@@ -953,6 +1122,8 @@ def end_session(payload: dict = Body(...)):
         supabase.table('sensors_activity').insert({
             'device_id': sensor_id,
             'hours': hours,
+            'session_start': startTime,
+            'session_end': now
         }).execute()
         res = supabase.table('sensors').update({'session_start': None}).eq('id', sensor_id).select().execute()
         if hasattr(res, 'error') and res.error:
