@@ -8,6 +8,10 @@ import requests
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+import re
+import unicodedata
+import secrets
+from pathlib import PurePosixPath
 
 from backend.api.file_processor import process_uploaded_file
 from backend.api import emission_factors
@@ -16,10 +20,7 @@ from backend.api.supabase_client import (
     initialize_supabase_from_env,
 )
 from backend.api.company_api import router as company_router
-from apscheduler.schedulers.background import BackgroundScheduler
 import io
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
 
 
 
@@ -28,8 +29,8 @@ app.include_router(company_router)
 
 GEMINI_API_KEY = os.getenv("GOOGLE_AI_API")
 
-# Initialize scheduler
-scheduler = BackgroundScheduler()
+# Scheduler will be created at runtime only when enabled (not on serverless hosts like Vercel)
+scheduler = None
 
 
 
@@ -137,7 +138,14 @@ def generate_monthly_reports():
         except Exception:
             regs = []
 
-        # Create PDF report
+        # Create PDF report (import reportlab lazily to avoid heavy imports on serverless)
+        try:
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.pagesizes import A4
+        except Exception:
+            # If reportlab is not available, skip PDF generation for this run
+            continue
+
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
         width, height = A4
@@ -284,6 +292,17 @@ def generate_monthly_reports():
 # Start scheduler job: run once daily at 00:05 to ensure monthly file on first of month
 @app.on_event("startup")
 def start_scheduler():
+    # Only start a background scheduler when running in a non-serverless environment.
+    # Vercel sets the VERCEL environment variable in its runtime; skip scheduler there.
+    global scheduler
+    if os.getenv('VERCEL'):
+        # Do not start scheduler on Vercel (serverless)
+        return
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+    except Exception:
+        return
+    scheduler = BackgroundScheduler()
     scheduler.add_job(generate_monthly_reports, 'cron', hour=10, minute=15)
     scheduler.start()
 
@@ -294,6 +313,22 @@ async def supabase_health(client = Depends(supabase_dep)):
 	# Lightweight health: confirm client is initialized and env present
 	url = client.rest_url if hasattr(client, "rest_url") else None
 	return {"supabase_client_initialized": True, "rest_url": url}
+
+
+def sanitize_filename(name: str) -> str:
+    if not name:
+        return "unnamed"
+    # Normalize unicode characters to closest ASCII, remove path separators
+    name = unicodedata.normalize('NFKD', name)
+    name = name.encode('ascii', 'ignore').decode('ascii')
+    # Keep only safe characters, replace spaces with dash
+    name = name.strip().replace(' ', '-')
+    name = re.sub(r"[^A-Za-z0-9._-]", '', name)
+    # Prevent hidden files or leading dots
+    name = name.lstrip('.')
+    if not name:
+        name = 'unnamed'
+    return name
 
 
 @app.post("/api/upload")
@@ -325,9 +360,16 @@ async def upload_file(file: UploadFile = File(...), email: str = Form(...)):
             result = {"text": text}
             file_content = file_bytes
 
-        # Save the file to Supabase storage
         supabase = app.state.supabase
-        file_path = f"{email}/{file.filename}"
+        base_name = sanitize_filename(file.filename)
+        # Append a short random suffix to avoid collisions
+        suffix = secrets.token_hex(4)
+        # Preserve extension if present
+        p = PurePosixPath(base_name)
+        stem = p.stem
+        ext = p.suffix
+        safe_name = f"{stem}-{suffix}{ext}"
+        file_path = f"{email}/{safe_name}"
         response = supabase.storage.from_("Default Bucket").upload(file_path, file_content)
 
         if not response:

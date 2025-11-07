@@ -20,6 +20,8 @@ export default function Dashboard() {
   const kpis = useMemo(() => getAggregatedKPIs(invoiceData), [invoiceData]);
   const series = useMemo(() => getLatestEmissionsTimeSeries(invoiceData), [invoiceData]);
 
+  console.log('Dashboard render', { company, invoiceData, itemEmissions, fallbackItemEmissions });
+
   const handleCompanySuccess = useCallback(() => {
     // Refresh company info after join/create
     if (user?.email) {
@@ -80,7 +82,7 @@ export default function Dashboard() {
           {invoiceData && invoiceData.total_emissions !== undefined ? (
             <>
               <p><b>Total Emissions:</b> {invoiceData.total_emissions} kg CO₂e</p>
-              <p><b>Total Spend:</b> {invoiceData.total_spend} $</p>
+              <p><b>Total Spend:</b> {invoiceData.total_spend} €</p>
               <p><b>Invoices Processed:</b> {invoiceData.raw ? invoiceData.raw.length : 0}</p>
               <p><b>Breakdown by Type:</b> {Object.entries(invoiceData.item_counts || {}).map(([type, count]) => `${type}: ${count}`).join(', ')}</p>
             </>

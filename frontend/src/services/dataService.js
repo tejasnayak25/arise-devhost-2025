@@ -27,20 +27,14 @@ export function getAggregatedKPIs(invoiceData) {
   return [
   { label: 'Last Month Emissions', value: invoiceData.total_emissions ? `${invoiceData.total_emissions} kg CO₂e` : '-', delta: '' },
     { label: 'Invoices', value: invoiceData.raw ? invoiceData.raw.length : 0, delta: '' },
-    { label: 'Spend', value: invoiceData.total_spend ? `${invoiceData.total_spend} $` : '-', delta: '' },
+    { label: 'Spend', value: invoiceData.total_spend ? `${invoiceData.total_spend} €` : '-', delta: '' },
   ];
 }
 
 
 // Default emission factors (kg CO2e per unit). These are defaults and should be adjusted per region/company.
 const DEFAULT_EMISSION_FACTORS = {
-  'kwh': 0.233,
-  'kwh/h': 0.233,
-  'l': 2.68,
-  'liter': 2.68,
-  'litre': 2.68,
-  'kg': 1.0,
-  'kgco2': 1.0,
+  
 }
 
 function normalizeUnit(u) {

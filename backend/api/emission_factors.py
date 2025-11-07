@@ -127,9 +127,9 @@ def refresh_cached_factors() -> Dict[str, float]:
         save_cached_factors(combined)
     return load_cached_factors()
 
-def get_factor(unit: str) -> Optional[float]:
-    if not unit:
-        return None
+# def get_factor(unit: str) -> Optional[float]:
+#     if not unit:
+#         return None
     # requests.get()
 
 
