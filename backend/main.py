@@ -70,111 +70,257 @@ def _parse_iso(ts: str):
         except Exception:
             return None
 
-
 def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: str):
     """Fetch sensors and their activity for a company between start_iso and end_iso and compute estimated emissions in kg CO2e.
     Returns: (total_sensor_emissions_kg, sensors_summary_list)
-    sensors_summary_list: [{ device_id, energy_kwh, emissions_kg, cycles, on_hours }]
+    sensors_summary_list: [{ sensor_id, device_id, energy_kwh, emissions_kg, cycles, on_hours }]
     """
+    # Fetch sensors tied to company_id
     try:
-        # Fetch sensors tied to company_id
         sres = client.table('sensors').select('*').eq('company_id', company_id).execute()
         sensors = sres.data or []
     except Exception:
         sensors = []
 
     if not sensors:
-        return 0, []
+        return 0.0, []
 
-    # Map device_id to sensor metadata
+    # Build a mapping from all possible device identifiers to sensor metadata.
     sensor_map = {}
-    device_ids = []
+    device_keys = set()
     for s in sensors:
-        did = s.get('device_id') or s.get('id')
-        if not did:
-            continue
-        device_ids.append(did)
-        sensor_map[did] = {
+        sid = s.get('id')
+        ext_did = s.get('device_id')
+        meta = {
+            'id': sid,
+            'device_id': ext_did,
             'power_kW': float(s.get('power_kW') or 0),
             'emission_factor': float(s.get('emission_factor') or 0),
             'meta': s
         }
+        if sid is not None:
+            # Map the primary key (e.g., 123) -> meta
+            sensor_map[sid] = meta
+            device_keys.add(sid)
+        if ext_did is not None:
+            # Map the external ID (e.g., 'abc-xyz') -> meta
+            sensor_map[ext_did] = meta
+            device_keys.add(ext_did)
 
-    # Fetch activity entries for this company in range
+    # Query activity rows for the sensors we just fetched.
+    activities = []
     try:
-        ares = client.table('sensors_activity').select('*').eq('company_id', company_id).gte('session_start', start_iso).lt('session_end', end_iso).execute()
-        activities = ares.data or []
-    except Exception:
-        activities = []
+        if device_keys:
+            dev_list = list(device_keys)
+            a_query = client.table('sensors_activity').select('*').in_('device_id', dev_list)
+        else:
+            # This case shouldn't be hit if we have sensors, but as a fallback
+            a_query = client.table('sensors_activity').select('*')
 
-    # Group activities by device_id
-    by_device = {}
+        # **FIXED**: Correctly filter for an *overlapping* time window:
+        # A session overlaps if it starts *before* the end_iso
+        # AND ends *after* the start_iso.
+        try:
+            a_query = a_query.lt('session_start', end_iso).gte('session_end', start_iso)
+            ares = a_query.execute()
+            activities = ares.data or []
+        except Exception:
+            # Fallback if chained filters fail: fetch by device_id only and filter in Python
+            ares = client.table('sensors_activity').select('*').in_('device_id', dev_list).execute()
+            py_activities = ares.data or []
+            
+            # Manual time filtering
+            start_dt = _parse_iso(start_iso)
+            end_dt = _parse_iso(end_iso)
+            if start_dt and end_dt:
+                for a in py_activities:
+                    ss = _parse_iso(a.get('session_start'))
+                    se = _parse_iso(a.get('session_end'))
+                    if ss and se and ss < end_dt and se >= start_dt:
+                        activities.append(a)
+            else:
+                # If time parsing fails, just use all activities (less accurate)
+                activities = py_activities
+            
+    except Exception:
+        activities = [] # Failed to get any activities
+
+    # **FIXED**: Group activities by the *canonical sensor ID* to avoid double counting
+    by_canonical_id = {}
     for a in activities:
-        did = a.get('device_id') or a.get('device') or (a.get('sensor_id') and str(a.get('sensor_id')))
-        if not did:
+        # Find the device identifier in the activity row
+        did = a.get('device_id') or a.get('sensor_id') or a.get('device') or a.get('deviceId')
+        if did is None:
             continue
-        by_device.setdefault(did, []).append(a)
+        
+        # Find the canonical sensor metadata using the map
+        meta = sensor_map.get(did)
+        if not meta:
+            # Activity for a sensor we don't own or don't know about
+            continue
+            
+        # Group by the sensor's primary key (e.g., 'id' from sensors table)
+        canonical_id = meta['id']
+        by_canonical_id.setdefault(canonical_id, []).append(a)
 
     total_emissions = 0.0
     summaries = []
 
-    for did, acts in by_device.items():
-        meta = sensor_map.get(did, {})
+    # **FIXED**: Reworked entire energy calculation logic
+    for canonical_id, acts in by_canonical_id.items():
+        # Get the metadata for this canonical sensor
+        meta = sensor_map.get(canonical_id)
+        if not meta:
+            continue # Should be impossible, but good to check
+
         power_kw = float(meta.get('power_kW') or 0)
         factor = float(meta.get('emission_factor') or 0)
 
-        # Calculate energy_kwh either from explicit energy fields or by ON/OFF events
         energy_kwh = 0.0
-        events = []
+        cycles = 0
+        on_hours = 0.0
+
+        explicit_energy_acts = []
+        duration_acts = []
+        event_acts = []
+
+        # --- 1. Classify all activities for this sensor ---
         for a in acts:
-            # direct energy reporting
-            e = None
+            # Check for explicit energy (Method A)
+            has_explicit_kwh = False
             for k in ('energy_kwh', 'kwh', 'energy'):
                 if a.get(k) is not None:
-                    try:
-                        e = float(a.get(k))
-                    except Exception:
-                        e = None
+                    explicit_energy_acts.append(a)
+                    has_explicit_kwh = True
                     break
-            if e is not None:
-                energy_kwh += e
+            if has_explicit_kwh:
+                continue # This row is classified, move to next row
+
+            # Check for duration-based (Method B)
+            if a.get('hours') is not None:
+                duration_acts.append(a)
                 continue
-            # state-based events
+            ss = a.get('session_start') or a.get('start') or a.get('timestamp')
+            se = a.get('session_end') or a.get('end')
+            if ss and se:
+                duration_acts.append(a)
+                continue
+                
+            # Check for state-based (Method C)
             state = (a.get('state') or '').upper() if a.get('state') else None
             ts = a.get('timestamp') or a.get('time') or a.get('created_at')
-            dt = _parse_iso(ts) if ts else None
-            if state in ('ON', 'OFF') and dt:
-                events.append({'ts': dt, 'state': state})
+            if state in ('ON', 'OFF') and ts:
+                event_acts.append(a)
 
-        # If we have events, compute ON durations
-        events.sort(key=lambda x: x['ts'])
-        on_since = None
-        cycles = 0
-        on_ms = 0
-        for ev in events:
-            if ev['state'] == 'ON':
-                if on_since is None:
-                    on_since = ev['ts']
-            elif ev['state'] == 'OFF':
-                if on_since:
-                    on_ms += (ev['ts'] - on_since).total_seconds() * 1000
-                    on_since = None
+        # --- 2. Process based on preference: Explicit (A) > Duration (B) > Events (C) ---
+        
+        if explicit_energy_acts:
+            # Method A: Use explicit energy reports
+            for a in explicit_energy_acts:
+                e = None
+                for k in ('energy_kwh', 'kwh', 'energy'):
+                    if a.get(k) is not None:
+                        try:
+                            e = float(a.get(k))
+                        except Exception:
+                            e = None
+                        break
+                if e is not None:
+                    energy_kwh += e
+            cycles = len(explicit_energy_acts)
+            # We can't reliably know on_hours from this data model
+        
+        elif duration_acts:
+            # Method B: Use duration * power
+            for a in duration_acts:
+                hrs = None
+                if a.get('hours') is not None:
+                    try:
+                        hrs = float(a.get('hours'))
+                    except Exception:
+                        hrs = None
+                
+                if hrs is None:
+                    # 'ss' and 'se' must exist from classification logic
+                    ss = a.get('session_start') or a.get('start') or a.get('timestamp')
+                    se = a.get('session_end') or a.get('end')
+                    try:
+                        s_dt = _parse_iso(ss)
+                        e_dt = _parse_iso(se)
+                        if s_dt and e_dt and e_dt > s_dt:
+                            # Clamp duration to the query window
+                            s_dt_clamped = max(s_dt, _parse_iso(start_iso))
+                            e_dt_clamped = min(e_dt, _parse_iso(end_iso))
+                            if e_dt_clamped > s_dt_clamped:
+                                hrs = (e_dt_clamped - s_dt_clamped).total_seconds() / 3600.0
+                            else:
+                                hrs = 0.0
+                    except Exception:
+                        hrs = None
+
+                if hrs is not None:
                     cycles += 1
-        # if still ON at the end of period, assume until end_iso
-        if on_since:
-            end_dt = _parse_iso(end_iso)
-            if end_dt:
-                on_ms += (end_dt - on_since).total_seconds() * 1000
+                    on_hours += hrs
+                    if power_kw > 0:
+                        energy_kwh += hrs * power_kw
+        
+        elif event_acts and power_kw > 0:
+            # Method C: Use ON/OFF state events
+            events = []
+            for a in event_acts:
+                state = (a.get('state') or '').upper()
+                ts = a.get('timestamp') or a.get('time') or a.get('created_at')
+                dt = _parse_iso(ts)
+                if dt:
+                    events.append({'ts': dt, 'state': state})
+            
+            if events:
+                events.sort(key=lambda x: x['ts'])
+                on_since = None
+                ev_on_seconds = 0
+                ev_cycles = 0
+                
+                start_dt = _parse_iso(start_iso)
+                end_dt = _parse_iso(end_iso)
 
-        on_hours = on_ms / (1000 * 60 * 60)
-        if on_hours and power_kw:
-            energy_kwh += on_hours * power_kw
+                for ev in events:
+                    # Ignore events outside our window
+                    if ev['ts'] < start_dt or ev['ts'] > end_dt:
+                        continue
+                        
+                    if ev['state'] == 'ON':
+                        if on_since is None:
+                            on_since = ev['ts']
+                    elif ev['state'] == 'OFF':
+                        if on_since:
+                            # Clamp event duration to our window
+                            start_clamp = max(on_since, start_dt)
+                            end_clamp = min(ev['ts'], end_dt)
+                            if end_clamp > start_clamp:
+                                ev_on_seconds += (end_clamp - start_clamp).total_seconds()
+                            on_since = None
+                            ev_cycles += 1
+                
+                # If it was left ON at the end of the period, cap it at 'end_iso'
+                if on_since:
+                    start_clamp = max(on_since, start_dt)
+                    end_clamp = end_dt
+                    if end_clamp > start_clamp:
+                         ev_on_seconds += (end_clamp - start_clamp).total_seconds()
 
+                ev_hours = ev_on_seconds / 3600.0
+                if ev_hours > 0:
+                    energy_kwh = ev_hours * power_kw # Use = not +=
+                    cycles = ev_cycles
+                    on_hours = ev_hours
+
+        # --- 3. Calculate emissions and append summary ---
         emissions_kg = energy_kwh * factor
         total_emissions += emissions_kg
 
         summaries.append({
-            'device_id': did,
+            'sensor_id': meta.get('id'), # The canonical internal ID
+            'device_id': meta.get('device_id'), # The external/user-facing ID
             'energy_kwh': round(energy_kwh, 6),
             'emissions_kg': round(emissions_kg, 6),
             'cycles': cycles,
@@ -182,8 +328,7 @@ def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: s
             'meta': meta.get('meta')
         })
 
-    return total_emissions, summaries
-
+    return round(total_emissions, 6), summaries
 
 def generate_monthly_reports():
     """Generate a markdown report per company for the current month and upload to storage."""
@@ -489,12 +634,12 @@ def sanitize_filename(name: str) -> str:
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...), email: str = Form(...)):
+async def upload_file(file: UploadFile = File(...), company_id: int = Form(...)):
     """
     Upload and process a file.
     - If CSV: parses and returns structured data
     - If other format (PDF, images): uses OCR to extract text
-    - Saves the file to Supabase storage under /{email}/{filename}
+    - Saves the file to Supabase storage under /{company_id}/{filename}
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -526,7 +671,7 @@ async def upload_file(file: UploadFile = File(...), email: str = Form(...)):
         stem = p.stem
         ext = p.suffix
         safe_name = f"{stem}-{suffix}{ext}"
-        file_path = f"{email}/{safe_name}"
+        file_path = f"{company_id}/{safe_name}"
         response = supabase.storage.from_("Default Bucket").upload(file_path, file_content)
 
         if not response:
@@ -543,16 +688,17 @@ async def upload_file(file: UploadFile = File(...), email: str = Form(...)):
 
 
 @app.get("/api/files")
-async def get_files(email: str, client = Depends(supabase_dep)):
+async def get_files(company_id: int, client = Depends(supabase_dep)):
     try:
-        response = client.storage.from_("Default Bucket").list(email, {"limit": 100, "offset": 0})
+        response = client.storage.from_("Default Bucket").list(company_id, {"limit": 100, "offset": 0})
 
         files = [
             {
                 "id": file.get("id"),
                 "name": file.get("name"),
                 "created_at": file.get("created_at"),
-				"size": file.get("metadata").get("size")
+				"size": file.get("metadata").get("size"),
+                "date": file.get("date"),
             }
             for file in response
         ]
@@ -578,6 +724,7 @@ class Invoice(BaseModel):
     price: int | None = Field(default=None)
     unit: str | None = Field(default=None)
     type: str | None = Field(default=None)
+    date: str | None = Field(default=None)
 
 @app.post("/api/parse-invoice")
 async def parse_invoice(payload:dict = Body(...)):
@@ -598,6 +745,7 @@ async def parse_invoice(payload:dict = Body(...)):
         "price (the price or cost associated with the item, e.g., 1200, 50), "
         "unit (the unit of measurement for the quantity, e.g., 'kWh', 'kg', 'liters', 'hours'; if no unit is applicable, use 'item'), "
         "type (the type or category of the item, e.g., 'energy', 'material', 'service'). "
+        "date (the date mentioned in the invoice). "
         "Remove any unnecessary or unrelated information. "
         "Return ALL line items found in the invoice as a JSON array of objects (do not stop after the first item). "
         "Each object must contain the fields: name, quantity, price, unit, and type. If a field is missing for an item, use null. "
@@ -643,6 +791,7 @@ async def parse_invoice(payload:dict = Body(...)):
                         "price": row.get("price", None),
                         "unit": row.get("unit", None),
                         "type": row.get("type", None),
+                        "date": row.get("date", datetime.utcnow().date().isoformat()),
                         "company_id": payload['company_id'],
                         "invoice_path": payload["storage_path"]
                     })
@@ -711,7 +860,7 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
         if typ:
             item_counts[typ] = item_counts.get(typ, 0) + 1
         # Time series by day (emissions)
-        created = row.get("created_at")
+        created = row.get("date")
         if created:
             day = created[:10]  # YYYY-MM-DD
             val = quantity_kg if isinstance(quantity_kg, (int, float)) else 0
@@ -724,15 +873,18 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
         start_iso = first_of_this_month.isoformat()
         end_iso = next_month.isoformat()
         sensor_total, sensor_summaries = compute_sensor_emissions(client, company_id, start_iso, end_iso)
-    except Exception:
+    except Exception as e:
         sensor_total = 0
         sensor_summaries = []
+
+    sensor_count = len(sensor_summaries)
 
     # Compose response
     return JSONResponse(content={
         "total_emissions": total_emissions,
         "sensor_emissions": sensor_total,
         "sensor_summaries": sensor_summaries,
+        "sensor_count": sensor_count,
         "total_spend": total_spend,
         "item_counts": item_counts,
         "time_series": time_series,
@@ -873,6 +1025,57 @@ async def download_report(path: str, company_id: int, client=Depends(supabase_de
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post('/api/files/remove')
+async def remove_file_source(payload: dict = Body(...), client=Depends(supabase_dep)):
+    """Remove an invoice record and its associated file from storage.
+    Expects JSON payload with: { invoice_id: int, company_id: int, invoice_path: str }
+    The invoice deletion is scoped by company_id. File removal is best-effort.
+    Returns JSON { deleted_invoice: <row or null>, removed_storage: bool }
+    """
+    try:
+        company_id = payload.get('company_id')
+        invoice_path = payload.get('invoice_path')
+
+        if not company_id:
+            raise HTTPException(status_code=400, detail='company_id is required')
+
+        # Delete the invoice record (scoped by company)
+        try:
+            del_q = client.table('invoices').delete().eq('invoice_path', invoice_path).eq('company_id', company_id)
+            del_res = del_q.execute()
+            if hasattr(del_res, 'error') and del_res.error:
+                raise HTTPException(status_code=500, detail=f"Failed to delete invoice: {del_res.error}")
+            deleted_invoice = None
+            try:
+                deleted_invoice = del_res.data[0] if del_res.data else None
+            except Exception:
+                deleted_invoice = None
+        except Exception as e:
+            print(e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+        removed_storage = False
+        # Remove file from storage if invoice_path provided
+        if invoice_path:
+            try:
+                # Attempt to remove the object. Wrap in try/except for best-effort.
+                client.storage.from_("Default Bucket").remove([invoice_path])
+                removed_storage = True
+            except Exception:
+                removed_storage = False
+
+        return JSONResponse(content={
+            'deleted_invoice': deleted_invoice,
+            'removed_storage': removed_storage
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get('/api/emission-factors')
 async def get_emission_factors():
     """Return the cached emission factors mapping."""
@@ -931,6 +1134,68 @@ async def list_sensors(company_id: str, client=Depends(supabase_dep)):
             raise HTTPException(status_code=500, detail=f"Failed to fetch sensors: {res.error}")
         rows = res.data or []
         return JSONResponse(content=rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/sensors/remove')
+async def remove_sensor(payload: dict = Body(...), client=Depends(supabase_dep)):
+    print("remove_sensor payload:", payload)
+    try:
+        device_id = payload.get('device_id')
+        company_id = payload.get('company_id')
+
+        if not device_id:
+            raise HTTPException(status_code=400, detail='device_id is required')
+
+        # Lookup the sensor by external device_id (and optional company_id)
+        q = client.table('sensors').select('*').eq('device_id', device_id)
+        if company_id:
+            q = q.eq('company_id', company_id)
+        res = q.execute()
+        if hasattr(res, 'error') and res.error:
+            raise HTTPException(status_code=500, detail=f"Failed to lookup sensor: {res.error}")
+        rows = res.data or []
+        if not rows:
+            raise HTTPException(status_code=404, detail='Sensor not found')
+        sensor = rows[0]
+
+        # Delete related activity rows first (match by device_id)
+        deleted_activity_count = 0
+        try:
+            da = client.table('sensors_activity').delete().eq('device_id', device_id).execute()
+            if not (hasattr(da, 'error') and da.error):
+                try:
+                    deleted_activity_count = len(da.data) if da.data else 0
+                except Exception:
+                    deleted_activity_count = 0
+        except Exception:
+            # best-effort: continue to delete sensor even if activity deletion fails
+            deleted_activity_count = 0
+
+        # Finally delete the sensor record (scoped by company_id if provided)
+        try:
+            del_q = client.table('sensors').delete().eq('device_id', device_id)
+            if company_id:
+                del_q = del_q.eq('company_id', company_id)
+            del_res = del_q.execute()
+            if hasattr(del_res, 'error') and del_res.error:
+                raise HTTPException(status_code=500, detail=f"Failed to delete sensor: {del_res.error}")
+            deleted_sensor = None
+            try:
+                deleted_sensor = del_res.data[0] if del_res.data else None
+            except Exception:
+                deleted_sensor = None
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        return JSONResponse(content={
+            'deleted_sensor': deleted_sensor,
+            'deleted_activity_count': deleted_activity_count
+        })
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1132,3 +1397,4 @@ def end_session(payload: dict = Body(...)):
         return JSONResponse(content=res.data[0] if res.data else {})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    

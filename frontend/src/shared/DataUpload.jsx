@@ -22,7 +22,7 @@ export default function DataUpload({ email, company_id, onComplete }) {
     setUploadStatus({})
 
     try {
-      const results = await uploadFiles(files, email, company_id, (fileIndex, result) => {
+      const results = await uploadFiles(files, company_id, (fileIndex, result) => {
         setUploadStatus(prev => ({
           ...prev,
           [fileIndex]: {

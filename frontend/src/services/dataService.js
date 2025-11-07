@@ -25,7 +25,6 @@ export function getAggregatedKPIs(invoiceData) {
   if (!invoiceData) return [];
   // If backend provides total_emissions, use it. Otherwise, fallback to spend.
   return [
-  { label: 'Last Month Emissions', value: invoiceData.total_emissions ? `${invoiceData.total_emissions} kg CO₂e` : '-', delta: '' },
     { label: 'Invoices', value: invoiceData.raw ? invoiceData.raw.length : 0, delta: '' },
     { label: 'Spend', value: invoiceData.total_spend ? `${invoiceData.total_spend} €` : '-', delta: '' },
   ];

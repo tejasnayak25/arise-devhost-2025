@@ -42,7 +42,10 @@ function AppContent() {
   return (
     <div className="app-root">
       <aside className="app-sidebar">
-        <div className="brand" style={{ marginBottom: 16 }}>ESG Automation</div>
+        {/* <div className="brand" style={{ marginBottom: 16 }}>ESG Automation</div> */}
+        <div style={{ width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
+          <img src="/logo.png" alt="Logo" style={{width: "60%", objectFit: "cover", aspectRatio: "16 / 6"}} />
+        </div>
         <nav className="nav vertical">
           <NavLink to="/" end>Dashboard</NavLink>
           <NavLink to="/sources">Data Sources</NavLink>

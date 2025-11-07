@@ -23,14 +23,15 @@ export default function DataSources() {
         try {
           const companyInfo = await getUserCompany(user.email);
           setCompany(companyInfo);
-          const files = await getFilesFromStorage(user.email)
+          const files = await getFilesFromStorage(companyInfo.id);
           let fileSources = files.map((file) => ({
             id: `file-${file.id}`,
             type: 'file',
             name: file.name,
             status: 'Ready',
             addedAt: new Date(file.created_at).toISOString().split('T')[0],
-            size: file.size
+            size: file.size,
+            data: file
           }));
           fileSources = fileSources.filter(i => i.size !== 0);
           // also fetch any persisted sensors
@@ -70,14 +71,45 @@ export default function DataSources() {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmTarget, setConfirmTarget] = useState(null)
 
-  function requestRemoveSource(id, name) {
-    setConfirmTarget({ id, name })
+  function requestRemoveSource(id, data, name, type) {
+    setConfirmTarget({ id, data, name, type })
     setConfirmOpen(true)
   }
 
   function confirmRemoval() {
     if (!confirmTarget) return
-    const { id } = confirmTarget
+    const { id, data, name, type } = confirmTarget
+    if(type === 'file') {
+      fetch(`/api/files/remove`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company_id: company?.id, invoice_path: `${company?.id}/${data.name}` })
+      })
+      .then(r => {
+        if (!r.ok) {
+          throw new Error('Failed to remove sensor')
+        }
+      })
+      .catch(err => {
+        console.error('Error removing sensor:', err)
+        alert('Failed to remove sensor. Please try again.')
+      });
+    } else if(type === "sensor") {
+      fetch(`/api/sensors/remove`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: data.device_id, company_id: company?.id})
+      })
+      .then(r => {
+        if (!r.ok) {
+          throw new Error('Failed to remove sensor')
+        }
+      })
+      .catch(err => {
+        console.error('Error removing sensor:', err)
+        alert('Failed to remove sensor. Please try again.')
+      });
+    }
     setConnectedSources(prev => prev.filter(s => s.id !== id))
     if (selectedSourceType && connectedSources.find(s => s.id === id)?.type === selectedSourceType) {
       setSelectedSourceType(null)
@@ -295,7 +327,7 @@ export default function DataSources() {
                     <button 
                       className="btn danger" 
                       style={{ padding: '6px 12px', fontSize: 12 }} 
-                      onClick={() => requestRemoveSource(source.id, source.name)}
+                      onClick={() => requestRemoveSource(source.id, source.data, source.name, source.type)}
                     >
                       Remove
                     </button>

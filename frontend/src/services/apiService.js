@@ -25,10 +25,10 @@ async function getAuthHeaders() {
  * @param {File} file - The file to upload
  * @returns {Promise<Object>} - The processed file data
  */
-export async function uploadFile(file, email) {
+export async function uploadFile(file, company_id) {
   const formData = new FormData()
   formData.append('file', file)
-  formData.append('email', email)
+  formData.append('company_id', company_id)
 
   try {
     const authHeaders = await getAuthHeaders()
@@ -87,11 +87,11 @@ export async function parseInvoice(text, company_id, storage_path) {
  * @param {Function} onProgress - Callback for progress updates (fileIndex, result)
  * @returns {Promise<Array>} - Array of upload results
  */
-export async function uploadFiles(files, email, company_id, onProgress) {
+export async function uploadFiles(files, company_id, onProgress) {
   const results = [];
   for (let i = 0; i < files.length; i++) {
     try {
-      const result = await uploadFile(files[i], email);
+      const result = await uploadFile(files[i], company_id);
       let invoiceData = null;
       if (result) {
         if(result.type === "csv") {
@@ -119,11 +119,11 @@ export async function uploadFiles(files, email, company_id, onProgress) {
  * @param {string} email - The email to fetch files for
  * @returns {Promise<Array>} - Array of files with metadata
  */
-export async function getFilesFromStorage(email) {
+export async function getFilesFromStorage(company_id) {
   try {
     const authHeaders = await getAuthHeaders()
 
-    const response = await fetch(`${API_BASE_URL}/api/files?email=${encodeURIComponent(email)}`, {
+    const response = await fetch(`${API_BASE_URL}/api/files?company_id=${encodeURIComponent(company_id)}`, {
       method: 'GET',
       headers: authHeaders,
     })
