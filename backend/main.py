@@ -1,5 +1,5 @@
 # --- New endpoint: Get last month's invoice data for dashboard ---
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, File, UploadFile, HTTPException, Form, Body
 from fastapi.responses import JSONResponse
 import json as _json
@@ -13,7 +13,8 @@ import re
 import unicodedata
 import secrets
 from pathlib import PurePosixPath
-
+from apscheduler.schedulers.background import BackgroundScheduler
+import logging
 from backend.api.file_processor import process_uploaded_file
 from backend.api import emission_factors
 from backend.api.supabase_client import (
@@ -31,7 +32,8 @@ app.include_router(company_router)
 GEMINI_API_KEY = os.getenv("GOOGLE_AI_API")
 
 # Scheduler will be created at runtime only when enabled (not on serverless hosts like Vercel)
-scheduler = None
+scheduler = BackgroundScheduler()
+logger = logging.getLogger(__name__)
 
 
 
@@ -200,19 +202,25 @@ def _parse_iso(ts: str):
         yr = int(m2.group(2))
         if 1 <= mth <= 12:
             return datetime(yr, mth, 1)
+        system_prompt = (
+            "You are an expert in sustainability and carbon accounting and invoice parsing. "
+            "From the following raw invoice text, extract ALL line items and return a JSON array of objects. For each item include the fields:\n"
+            "- name (string)\n"
+            "- quantity (number or null)\n"
+            "- price (number or null)\n"
+            "- unit (string or null; use 'item' when not applicable)\n"
+            "- type (string or null)\n"
+            "- date (string or null)\n"
+            "Additionally, for each item determine whether it represents a net-negative carbon resource (a \"positive\" resource) and include classification fields:\n"
+            "- is_positive (boolean) -- true when this item is a carbon removal or negative-emission resource\n"
+            "- confidence (number between 0 and 1) -- your confidence in the classification\n"
+            "- reason (short string) -- brief explanation for the classification decision\n"
+            "Return ONLY a JSON array (no extra text). Preserve the input ordering. Be conservative when labeling items as positive; when unsure, set is_positive=false and confidence below 0.6."
+        )
+def compute_sensor_emissions(client, company_id, start_iso, end_iso):
+    """Compute sensor-derived emissions for a company between start_iso and end_iso.
 
-    m3 = re.fullmatch(r'(\d{4})', s)
-    if m3:
-        yr = int(m3.group(1))
-        return datetime(yr, 1, 1)
-
-    # Could not parse
-    return None
-
-def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: str):
-    """Fetch sensors and their activity for a company between start_iso and end_iso and compute estimated emissions in kg CO2e.
-    Returns: (total_sensor_emissions_kg, sensors_summary_list)
-    sensors_summary_list: [{ sensor_id, device_id, energy_kwh, emissions_kg, cycles, on_hours }]
+    Returns: (total_emissions_kg: float, summaries: list)
     """
     # Fetch sensors tied to company_id
     try:
@@ -472,6 +480,7 @@ def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: s
 def generate_monthly_reports():
     """Generate a markdown report per company for the current month and upload to storage."""
     client = app.state.supabase
+    print("Generating monthly reports...")
     if not client:
         return
     # Fetch all companies
@@ -494,8 +503,31 @@ def generate_monthly_reports():
         r = q.execute()
         rows = r.data or []
         # Simple aggregates
-        total_spend = sum([row.get("price") or 0 for row in rows if isinstance(row.get("price"), (int, float))])
-        total_emissions = sum([row.get("quantity") or 0 for row in rows if isinstance(row.get("quantity"), (int, float))])
+        total_spend = 0
+        total_emissions = 0
+        # When an invoice line item has is_positive=True it represents a net-negative resource
+        # and should reduce overall emissions (subtract from totals). We still count spend
+        # as positive (money out), but emissions are negated for positive items.
+        for row in rows:
+            # accumulate spend
+            price = row.get("price")
+            if isinstance(price, (int, float)):
+                total_spend += price
+
+            # handle quantity/emissions: negate when is_positive True
+            qty = row.get("quantity")
+            if isinstance(qty, (int, float)):
+                try:
+                    # some rows may specify units like 'tonne CO2' -- try converting
+                    converted = emission_factors.convert_to_kg(qty, row.get('unit'))
+                    qty_val = converted if converted is not None else qty
+                except Exception:
+                    qty_val = qty
+
+                if row.get('is_positive'):
+                    total_emissions -= qty_val
+                else:
+                    total_emissions += qty_val
         item_counts = {}
         for row in rows:
             typ = row.get("type") or "other"
@@ -729,25 +761,13 @@ def generate_monthly_reports():
                 pass
             client.storage.from_("Default Bucket").upload(filename, pdf_bytes)
 
+        print(f"Uploaded report for company {company_id} to {filename}")
 
-# Start scheduler job: run once daily at 00:05 to ensure monthly file on first of month
+
 @app.on_event("startup")
 def start_scheduler():
-    # Only start a background scheduler when running in a non-serverless environment.
-    # Vercel sets the VERCEL environment variable in its runtime; skip scheduler there.
-    global scheduler
-    if os.getenv('VERCEL'):
-        # Do not start scheduler on Vercel (serverless)
-        return
-    try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-    except Exception:
-        return
-    scheduler = BackgroundScheduler()
     scheduler.add_job(generate_monthly_reports, 'cron', day=1, hour=0, minute=0)
     scheduler.start()
-
-
 
 @app.get("/health/supabase")
 async def supabase_health(client = Depends(supabase_dep)):
@@ -864,6 +884,9 @@ class Invoice(BaseModel):
     unit: str | None = Field(default=None)
     type: str | None = Field(default=None)
     date: str | None = Field(default=None)
+    is_positive: bool | None = Field(default=None)
+    confidence: float | None = Field(default=None)
+    reason: str | None = Field(default=None)
 
 @app.post("/api/parse-invoice")
 async def parse_invoice(payload:dict = Body(...)):
@@ -877,18 +900,13 @@ async def parse_invoice(payload:dict = Body(...)):
         raise HTTPException(status_code=500, detail="Gemini API key not configured.")
 
     system_prompt = (
-        "You are an expert in sustainability and carbon accounting. "
-        "From the following raw invoice text, extract only the following fields for each item: "
-        "name (the description of the item, e.g., 'Electricity', 'Natural Gas', 'Freight'), "
-        "quantity (the amount or number of units for the item, e.g., 100, 5), "
-        "price (the price or cost associated with the item, e.g., 1200, 50), "
-        "unit (the unit of measurement for the quantity, e.g., 'kWh', 'kg', 'liters', 'hours'; if no unit is applicable, use 'item'), "
-        "type (the type or category of the item, e.g., 'energy', 'material', 'service'). "
-        "date (the date mentioned in the invoice). "
-        "Remove any unnecessary or unrelated information. "
-        "Return ALL line items found in the invoice as a JSON array of objects (do not stop after the first item). "
-        "Each object must contain the fields: name, quantity, price, unit, and type. If a field is missing for an item, use null. "
-        "If a numeric value is present for quantity or price, return it as a number. If no unit applies, set unit to 'item'."
+        """
+        You are an expert in sustainability and carbon accounting. From the invoice text, extract all line items and return them as a JSON array. Each object must have the following fields: name, quantity, price, unit, type, date, is_positive, confidence, reason.
+        name is the item description, quantity is a number, price is a number, unit is the measurement unit or item if none, type is the category such as energy, material, or service, date is the invoice date.
+        is_positive is true if the item reduces or removes carbon emissions, false if it produces or increases emissions. Do not confuse this with financial payment direction. Be conservative when assigning true.
+        confidence is a number between 0 and 1 showing how sure you are. reason is a short explanation of why the item is positive or not.
+        Only return the JSON array with all items. No extra text.
+        """
     )
 
     try:
@@ -898,7 +916,6 @@ async def parse_invoice(payload:dict = Body(...)):
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
-                # Require an array of Invoice objects
                 response_json_schema={
                     "type": "array",
                     "items": Invoice.model_json_schema()
@@ -925,7 +942,7 @@ async def parse_invoice(payload:dict = Body(...)):
                 # Only insert if at least one field is present and company_id is provided
                 company_id = payload.get('company_id')
                 storage_path = payload.get('storage_path')
-                if company_id and any(row.get(f) is not None for f in ("quantity", "price", "unit", "type")):
+                if company_id and any(row.get(f) is not None for f in ("quantity", "price", "unit", "type", "name")):
                     # Normalize date: accept single dates or ranges like '01 Feb 2025- 28 Feb 2025'
                     raw_date = row.get('date') or row.get('invoice_date')
                     date_str = datetime.utcnow().date().isoformat()
@@ -941,7 +958,6 @@ async def parse_invoice(payload:dict = Body(...)):
                     except Exception:
                         # fallback to today's date
                         date_str = datetime.utcnow().date().isoformat()
-
                     to_insert.append({
                         "name": row.get("name", None),
                         "quantity": row.get("quantity", None),
@@ -950,7 +966,10 @@ async def parse_invoice(payload:dict = Body(...)):
                         "type": row.get("type", None),
                         "date": date_str,
                         "company_id": company_id,
-                        "invoice_path": storage_path
+                        "invoice_path": storage_path,
+                        "is_positive": row.get("is_positive", None),
+                        "confidence": row.get("confidence", None),
+                        "reason": row.get("reason", None),
                     })
             if to_insert:
                 insert_result = supabase.table("invoices").insert(to_insert).execute()
@@ -1011,7 +1030,12 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
             quantity_kg = quantity
 
         if isinstance(quantity_kg, (int, float)):
-            total_emissions += quantity_kg
+            # If this invoice line is marked as a net-negative (is_positive), it reduces
+            # the company's footprint so subtract it; otherwise add it.
+            if row.get('is_positive'):
+                total_emissions -= quantity_kg
+            else:
+                total_emissions += quantity_kg
         # Count by type
         typ = row.get("type")
         if typ:
@@ -1021,7 +1045,10 @@ async def get_company_invoices_current_month(company_id: str, client=Depends(sup
         if created:
             day = created[:10]  # YYYY-MM-DD
             val = quantity_kg if isinstance(quantity_kg, (int, float)) else 0
-            time_series[day] = time_series.get(day, 0) + val
+            if row.get('is_positive'):
+                time_series[day] = time_series.get(day, 0) - val
+            else:
+                time_series[day] = time_series.get(day, 0) + val
 
     # Include sensor-derived emissions for the same period
     sensor_total = 0
@@ -1075,7 +1102,8 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
             'quantity': r.get('quantity'),
             'price': r.get('price'),
             'unit': r.get('unit'),
-            'type': r.get('type')
+            'type': r.get('type'),
+            'is_positive': r.get('is_positive')
         }
         for r in rows
     ]
@@ -1083,7 +1111,7 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
     if GEMINI_API_KEY and items_payload:
         try:
             system_prompt = (
-                'You are a carbon accounting assistant. Given a list of invoice line items, for each item return a JSON object with: name, quantity (number or null), unit (string), factor (kg CO2e per unit or null), emissions (kg CO2e or null), formula (human-readable). Return a JSON array in the same order as input.'
+                'You are a carbon accounting assistant. Given a list of invoice line items, for each item return a JSON object with: name, quantity (number or null), unit (string), factor (kg CO2e per unit or null), emissions (kg CO2e or null), formula (human-readable), is_positive. Return a JSON array in the same order as input.'
             )
             client_g = genai.Client(api_key=GEMINI_API_KEY)
             response = client_g.models.generate_content(
@@ -1123,6 +1151,9 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
         cached = emission_factors.get_factor_for_unit(unit)
         if cached is not None:
             emissions = qty_for_calc * cached if qty_for_calc is not None else None
+            # If the original invoice line was a net-negative (is_positive), make emissions negative
+            if r.get('is_positive') and emissions is not None:
+                emissions = -abs(emissions)
             if qty_for_calc is not None and qty_for_calc != qty:
                 formula = f"Converted {qty} {unit} -> {qty_for_calc} kg; {qty_for_calc} * {cached} = {emissions}"
             else:
@@ -1133,7 +1164,8 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
                 'unit': unit,
                 'factor': cached,
                 'emissions': emissions,
-                'formula': formula
+                'formula': formula,
+                'is_positive': r.get('is_positive')
             })
         else:
             fallback.append({
@@ -1142,7 +1174,8 @@ async def get_company_item_emissions(company_id: int, client=Depends(supabase_de
                 'unit': unit,
                 'factor': None,
                 'emissions': None,
-                'formula': 'No factor available — Gemini not configured or failed. Please map unit to factor.'
+                'formula': 'No factor available — Gemini not configured or failed. Please map unit to factor.',
+                'is_positive': r.get('is_positive')
             })
     return JSONResponse(content={'items': fallback, 'raw': rows})
 
