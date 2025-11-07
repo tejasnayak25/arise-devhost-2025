@@ -49,28 +49,32 @@ function AppContent() {
           <NavLink to="/reports">Reports</NavLink>
           <NavLink to="/compliance">Compliance</NavLink>
         </nav>
-        <div style={{ marginTop: 'auto', paddingTop: 16, borderTop: '1px solid #ffffff0f' }}>
+        <div className="sidebar-footer">
           {user && (
-            <div style={{ marginBottom: 12, fontSize: 12, color: '#666' }}>
-              <div style={{ marginBottom: 4 }}>{user.email}</div>
+              <div className="sidebar-user">
+              <div className="user-email">{user.email}</div>
               <button
+                type="button"
+                className="btn secondary small signout-btn"
                 onClick={handleSignOut}
-                style={{
-                  width: '100%',
-                  padding: '6px 12px',
-                  fontSize: 12,
-                  border: '1px solid #ffffff0f',
-                  borderRadius: 4,
-                  backgroundColor: 'transparent',
-                  cursor: 'pointer',
-                  color: '#666'
-                }}
+                aria-label="Sign out of your account"
+                title="Sign out"
               >
+                <svg
+                  className="signout-icon"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path fill="currentColor" d="M16 13v-2H7V8l-5 4 5 4v-3zM20 3H10a2 2 0 0 0-2 2v3h2V5h10v14H10v-3H8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z" />
+                </svg>
                 Sign Out
               </button>
             </div>
           )}
-          <div className="muted" style={{ fontSize: 12 }}>v0.1.0</div>
         </div>
       </aside>
       <div className="app-content">

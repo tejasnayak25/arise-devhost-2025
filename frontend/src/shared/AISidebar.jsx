@@ -42,21 +42,21 @@ export default function AISidebar({ user, company }) {
   }
 
   return (
-    <aside className="panel" style={{ height: '100%', position: 'sticky', top: 20, display: 'flex', flexDirection: 'column' }}>
+    <aside className="panel ai-sidebar">
       <h3>AI Assistant</h3>
       <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
         Automated analysis of your latest activity and gaps.
       </div>
-      <ul style={{ display: 'grid', gap: 10, listStyle: 'none', flex: 1, overflowY: 'auto', placeContent: 'start', maxHeight: '65vh', padding: "10px" }}>
+      <ul className="chat-list">
         {messages.map((m, idx) => (
-          <li key={idx} style={{ marginBottom: 6, textAlign: m.role === 'ai' ? 'left' : 'right' }}>
-            <span style={{ background: m.role === 'ai' ? '#5cbe6554' : 'rgba(121, 101, 202, 0.51)', borderRadius: 8, padding: '6px 10px', display: 'inline-block' }}>
+          <li key={idx} className={m.role === 'ai' ? 'msg-left' : 'msg-right'}>
+            <div className={`chat-bubble ${m.role === 'ai' ? 'ai' : 'user'}`}>
               {m.role === 'ai' ? <ReactMarkdown>{m.text}</ReactMarkdown> : m.text}
-            </span>
+            </div>
           </li>
         ))}
       </ul>
-      <form onSubmit={handleSend} style={{ display: 'flex', gap: 4, marginTop: 8 }}>
+      <form onSubmit={handleSend} className='chat-form' style={{ display: 'flex', gap: 4, marginTop: 8 }}>
         <input
           className="input"
           style={{ flex: 1 }}

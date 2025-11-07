@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import Depends, FastAPI, File, UploadFile, HTTPException, Form, Body
 from fastapi.responses import JSONResponse
 import json as _json
+import base64
 import os
 import requests
 from google import genai
@@ -722,6 +723,48 @@ async def refresh_emission_factors():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post('/api/sensors')
+async def create_sensor(payload: dict = Body(...), client=Depends(supabase_dep)):
+    """Create a sensor record in the sensors table. Expects JSON payload with keys:
+    device_id, power_kW, emission_factor, last_analysis
+    Associates the record with the authenticated user if an Authorization Bearer token is provided.
+    """
+    try:
+
+        record = {
+            'device_id': payload.get('device_id'),
+            'power_kW': payload.get('power_kW'),
+            'emission_factor': payload.get('emission_factor'),
+            'last_analysis': payload.get('last_analysis'),
+            'company_id': payload.get('company_id')
+        }
+
+        res = client.table('sensors').insert(record).execute()
+        if hasattr(res, 'error') and res.error:
+            raise HTTPException(status_code=500, detail=f"Failed to insert sensor: {res.error}")
+        created = None
+        try:
+            created = res.data[0] if res.data else None
+        except Exception:
+            created = res.data
+
+        return JSONResponse(content=created)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get('/api/sensors')
+async def list_sensors(company_id: str, client=Depends(supabase_dep)):
+    """List sensors for the authenticated owner (best-effort)."""
+    try:
+        res = client.table('sensors').select('*').eq('company_id', company_id).execute()
+        if hasattr(res, 'error') and res.error:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch sensors: {res.error}")
+        rows = res.data or []
+        return JSONResponse(content=rows)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Analyze current month report with Gemini
 @app.post("/api/analyze-current-month-report")
 async def analyze_current_month_report(company_id: int, prompt:str = Body(...), client=Depends(supabase_dep)):
@@ -865,3 +908,56 @@ async def compare_compliance(payload: ComplianceCompareRequest = Body(...), clie
         })
 
     return JSONResponse(content={'regulations': regulations, 'findings': findings})
+
+@app.post("/api/session/start")
+async def start_session(payload: dict = Body(...)):
+    try:
+        supabase = app.state.supabase
+        device_id = payload.get('device_id')
+        if not device_id:
+            raise HTTPException(status_code=400, detail="device_id is required")
+        id = supabase.table('sensors').select('id').eq('device_id', device_id).execute()
+        if hasattr(id, 'error') and id.error:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch sensor: {id.error}")
+        sensor_rows = id.data or []
+        if not sensor_rows:
+            raise HTTPException(status_code=404, detail="Sensor not found")
+        sensor_id = sensor_rows[0].get('id')
+        res = supabase.table('sensors').update({'session_start': datetime.utcnow().isoformat()}).eq('id', sensor_id).select().execute()
+        if hasattr(res, 'error') and res.error:
+            raise HTTPException(status_code=500, detail=f"Failed to start session: {res.error}")
+
+        return JSONResponse(content=res.data[0] if res.data else {})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/session/end")
+def end_session(payload: dict = Body(...)):
+    try:
+        supabase = app.state.supabase
+        device_id = payload.get('device_id')
+        if not device_id:
+            raise HTTPException(status_code=400, detail="device_id is required")
+        id = supabase.table('sensors').select('id').eq('device_id', device_id).execute()
+        if hasattr(id, 'error') and id.error:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch sensor: {id.error}")
+        sensor_rows = id.data or []
+        if not sensor_rows:
+            raise HTTPException(status_code=404, detail="Sensor not found")
+        sensor_id = sensor_rows[0].get('id')
+        now = datetime.utcnow().isoformat()
+        startTime = sensor_rows[0].get('session_start')
+        if not startTime:
+            raise HTTPException(status_code=400, detail="No active session to end")
+        hours = (datetime.fromisoformat(now) - datetime.fromisoformat(startTime)).total_seconds() / 3600.0
+        supabase.table('sensors_activity').insert({
+            'device_id': sensor_id,
+            'hours': hours,
+        }).execute()
+        res = supabase.table('sensors').update({'session_start': None}).eq('id', sensor_id).select().execute()
+        if hasattr(res, 'error') and res.error:
+            raise HTTPException(status_code=500, detail=f"Failed to end session: {res.error}")
+
+        return JSONResponse(content=res.data[0] if res.data else {})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
