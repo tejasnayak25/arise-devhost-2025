@@ -737,7 +737,7 @@ def generate_monthly_reports():
 
 @app.on_event("startup")
 def start_scheduler():
-    scheduler.add_job(generate_monthly_reports, 'cron', hour=20, minute=44)
+    scheduler.add_job(generate_monthly_reports, 'cron', day=1, hour=0, minute=0)
     scheduler.start()
 
 @app.get("/health/supabase")
