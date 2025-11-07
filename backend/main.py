@@ -202,20 +202,21 @@ def _parse_iso(ts: str):
         yr = int(m2.group(2))
         if 1 <= mth <= 12:
             return datetime(yr, mth, 1)
-
-    m3 = re.fullmatch(r'(\d{4})', s)
-    if m3:
-        yr = int(m3.group(1))
-        return datetime(yr, 1, 1)
-
-    # Could not parse
-    return None
-
-def compute_sensor_emissions(client, company_id: str, start_iso: str, end_iso: str):
-    """Fetch sensors and their activity for a company between start_iso and end_iso and compute estimated emissions in kg CO2e.
-    Returns: (total_sensor_emissions_kg, sensors_summary_list)
-    sensors_summary_list: [{ sensor_id, device_id, energy_kwh, emissions_kg, cycles, on_hours }]
-    """
+        system_prompt = (
+            "You are an expert in sustainability and carbon accounting and invoice parsing. "
+            "From the following raw invoice text, extract ALL line items and return a JSON array of objects. For each item include the fields:\n"
+            "- name (string)\n"
+            "- quantity (number or null)\n"
+            "- price (number or null)\n"
+            "- unit (string or null; use 'item' when not applicable)\n"
+            "- type (string or null)\n"
+            "- date (string or null)\n"
+            "Additionally, for each item determine whether it represents a net-negative carbon resource (a \"positive\" resource) and include classification fields:\n"
+            "- is_positive (boolean) -- true when this item is a carbon removal or negative-emission resource\n"
+            "- confidence (number between 0 and 1) -- your confidence in the classification\n"
+            "- reason (short string) -- brief explanation for the classification decision\n"
+            "Return ONLY a JSON array (no extra text). Preserve the input ordering. Be conservative when labeling items as positive; when unsure, set is_positive=false and confidence below 0.6."
+        )
     # Fetch sensors tied to company_id
     try:
         sres = client.table('sensors').select('*').eq('company_id', company_id).execute()
@@ -855,6 +856,9 @@ class Invoice(BaseModel):
     unit: str | None = Field(default=None)
     type: str | None = Field(default=None)
     date: str | None = Field(default=None)
+    is_positive: bool | None = Field(default=None)
+    confidence: float | None = Field(default=None)
+    reason: str | None = Field(default=None)
 
 @app.post("/api/parse-invoice")
 async def parse_invoice(payload:dict = Body(...)):
@@ -868,18 +872,13 @@ async def parse_invoice(payload:dict = Body(...)):
         raise HTTPException(status_code=500, detail="Gemini API key not configured.")
 
     system_prompt = (
-        "You are an expert in sustainability and carbon accounting. "
-        "From the following raw invoice text, extract only the following fields for each item: "
-        "name (the description of the item, e.g., 'Electricity', 'Natural Gas', 'Freight'), "
-        "quantity (the amount or number of units for the item, e.g., 100, 5), "
-        "price (the price or cost associated with the item, e.g., 1200, 50), "
-        "unit (the unit of measurement for the quantity, e.g., 'kWh', 'kg', 'liters', 'hours'; if no unit is applicable, use 'item'), "
-        "type (the type or category of the item, e.g., 'energy', 'material', 'service'). "
-        "date (the date mentioned in the invoice). "
-        "Remove any unnecessary or unrelated information. "
-        "Return ALL line items found in the invoice as a JSON array of objects (do not stop after the first item). "
-        "Each object must contain the fields: name, quantity, price, unit, and type. If a field is missing for an item, use null. "
-        "If a numeric value is present for quantity or price, return it as a number. If no unit applies, set unit to 'item'."
+        """
+        You are an expert in sustainability and carbon accounting. From the invoice text, extract all line items and return them as a JSON array. Each object must have the following fields: name, quantity, price, unit, type, date, is_positive, confidence, reason.
+        name is the item description, quantity is a number, price is a number, unit is the measurement unit or item if none, type is the category such as energy, material, or service, date is the invoice date.
+        is_positive is true if the item reduces or removes carbon emissions, false if it produces or increases emissions. Do not confuse this with financial payment direction. Be conservative when assigning true.
+        confidence is a number between 0 and 1 showing how sure you are. reason is a short explanation of why the item is positive or not.
+        Only return the JSON array with all items. No extra text.
+        """
     )
 
     try:
@@ -889,7 +888,6 @@ async def parse_invoice(payload:dict = Body(...)):
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
-                # Require an array of Invoice objects
                 response_json_schema={
                     "type": "array",
                     "items": Invoice.model_json_schema()
@@ -916,7 +914,7 @@ async def parse_invoice(payload:dict = Body(...)):
                 # Only insert if at least one field is present and company_id is provided
                 company_id = payload.get('company_id')
                 storage_path = payload.get('storage_path')
-                if company_id and any(row.get(f) is not None for f in ("quantity", "price", "unit", "type")):
+                if company_id and any(row.get(f) is not None for f in ("quantity", "price", "unit", "type", "name")):
                     # Normalize date: accept single dates or ranges like '01 Feb 2025- 28 Feb 2025'
                     raw_date = row.get('date') or row.get('invoice_date')
                     date_str = datetime.utcnow().date().isoformat()
@@ -932,7 +930,6 @@ async def parse_invoice(payload:dict = Body(...)):
                     except Exception:
                         # fallback to today's date
                         date_str = datetime.utcnow().date().isoformat()
-
                     to_insert.append({
                         "name": row.get("name", None),
                         "quantity": row.get("quantity", None),
