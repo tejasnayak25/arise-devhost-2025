@@ -94,7 +94,6 @@ export async function uploadFiles(files, email, company_id, onProgress) {
       const result = await uploadFile(files[i], email);
       let invoiceData = null;
       if (result) {
-        console.log(result)
         if(result.type === "csv") {
           invoiceData = await parseInvoice(JSON.stringify(result), company_id, result.storage_path);
         } else if(result.text) {
@@ -138,6 +137,56 @@ export async function getFilesFromStorage(email) {
     return data
   } catch (error) {
     console.error('Error fetching files from backend:', error)
+    throw error
+  }
+}
+
+/**
+ * Create a sensor on the backend (saves to sensors table)
+ * @param {Object} payload - sensor metadata (device_id, power_kW, emission_factor, last_analysis)
+ * @returns {Promise<Object>} - created sensor record
+ */
+export async function createSensor(payload) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/sensors`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...payload,
+        email: (await supabase.auth.getUser()).data.user.email
+      })
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }))
+      throw new Error(error.detail || `Failed to create sensor: ${response.statusText}`)
+    }
+
+    return await response.json()
+  } catch (error) {
+    console.error('Error creating sensor:', error)
+    throw error
+  }
+}
+
+/**
+ * Fetch sensors for the authenticated user
+ * @returns {Promise<Array>} - list of sensor records
+ */
+export async function getSensors(company_id) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/sensors?company_id=${company_id}`, {
+      method: 'GET',
+    })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }))
+      throw new Error(error.detail || `Failed to fetch sensors: ${response.statusText}`)
+    }
+    return await response.json()
+  } catch (error) {
+    console.error('Error fetching sensors:', error)
     throw error
   }
 }

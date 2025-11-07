@@ -3,9 +3,9 @@ import DataUpload from '../shared/DataUpload'
 import DatabaseLink from '../shared/DatabaseLink'
 import ConfirmModal from '../shared/ConfirmModal'
 import { useAuth } from '../contexts/AuthContext'
-import { getFilesFromStorage } from '../services/apiService'
+import { getFilesFromStorage, getSensors } from '../services/apiService'
 import { getUserCompany } from '../services/companyService'
-
+import SensorLink from '../shared/SensorLink'
 
 export default function DataSources() {
   const [showAddSource, setShowAddSource] = useState(false)
@@ -14,6 +14,8 @@ export default function DataSources() {
   const { user } = useAuth()
   const [company, setCompany] = useState(undefined); // undefined = loading, null = not in company
   const [connectedSources, setConnectedSources] = useState([])
+  const [dbConn, setDbConn] = useState(null)
+  const [sensorConn, setSensorConn] = useState(null)
 
   useEffect(() => {
     async function fetchCompanyAndFiles() {
@@ -31,7 +33,26 @@ export default function DataSources() {
             size: file.size
           }));
           fileSources = fileSources.filter(i => i.size !== 0);
-          setConnectedSources((prev) => [...fileSources])
+          // also fetch any persisted sensors
+          let sensorSources = []
+          try {
+            const sensors = await getSensors(companyInfo.id);
+            if (Array.isArray(sensors)) {
+              sensorSources = sensors.map(s => ({
+                id: `sensor-${s.id || s.device_id}`,
+                type: 'sensor',
+                name: s.device_id || `Sensor ${s.id}`,
+                status: 'Connected',
+                addedAt: s.created_at ? s.created_at.split('T')[0] : new Date().toISOString().split('T')[0],
+                data: s
+              }))
+            }
+          } catch (e) {
+            // ignore sensors fetch errors
+            console.error('Error fetching sensors:', e)
+          }
+
+          setConnectedSources((prev) => [...sensorSources, ...fileSources])
         } catch (error) {
           setCompany(null);
           console.error('Error fetching company or files:', error)
@@ -77,7 +98,6 @@ export default function DataSources() {
         if (result.success) {
           const newId = `file-${Date.now()}-${index}`
           const data = result.data;
-          console.log(data);
           const status = data.type === 'csv' 
             ? `Ready (${data.row_count} rows)`
             : data.type === 'ocr'
@@ -124,9 +144,24 @@ export default function DataSources() {
     setSelectedSourceType(null)
   }
 
+  function handleSensorConnect(payload) {
+    const newId = `sensor-${Date.now()}`
+    const newSource = {
+      id: newId,
+      type: 'sensor',
+      name: payload.device_id || `Sensor ${newId}`,
+      status: 'Connected',
+      addedAt: new Date().toISOString().split('T')[0],
+      data: payload
+    }
+    setConnectedSources(prev => [newSource, ...prev])
+    setSensorConn(payload)
+    setSelectedSourceType(null)
+  }
+
   return (
     <div className="stack">
-      <h1 style={{ margin: '0 0 20px', fontSize: 28, fontWeight: 700 }}>Data Sources</h1>
+      <h1 style={{ margin: '0 0 20px', fontSize: 28, fontWeight: 700, color: "black" }}>Data Sources</h1>
 
       <div className="panel">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: showAddSource || selectedSourceType ? 16 : 0 }}>
@@ -139,21 +174,39 @@ export default function DataSources() {
         </div>
 
         {showAddSource && !selectedSourceType && (
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: '1fr 1fr', marginTop: 12 }}>
-            <div className="panel" style={{ padding: 16, cursor: 'pointer', border: '2px solid rgba(96,165,250,.2)' }} onClick={() => handleAddSource('file')}>
-              <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 16 }}>File Upload</div>
-              <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>
-                Upload invoices, meter readings, and Scope 3 data files (CSV, XLSX, PDF)
-              </div>
-              <button className="btn" style={{ width: '100%' }}>Select File Upload</button>
-            </div>
-            <div className="panel" style={{ padding: 16, cursor: 'pointer', border: '2px solid rgba(96,165,250,.2)' }} onClick={() => handleAddSource('database')}>
-              <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 16 }}>Database Connection</div>
-              <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>
-                Connect to your database to import ESG data automatically
-              </div>
-              <button className="btn" style={{ width: '100%' }}>Select Connection</button>
-            </div>
+          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: '1fr 1fr 1fr', marginTop: 12 }}>
+            <button
+              type="button"
+              className="panel panel-option"
+              onClick={() => handleAddSource('file')}
+              aria-label="Add file upload source"
+            >
+              <div className="panel-option-title">File Upload</div>
+              <div className="muted panel-option-desc">Upload invoices, meter readings, and Scope 3 data files (CSV, XLSX, PDF)</div>
+              <span className="btn panel-cta">Select File Upload</span>
+            </button>
+
+            <button
+              type="button"
+              className="panel panel-option"
+              onClick={() => handleAddSource('database')}
+              aria-label="Add database connection"
+            >
+              <div className="panel-option-title">Database Connection</div>
+              <div className="muted panel-option-desc">Connect to your database to import ESG data automatically</div>
+              <span className="btn panel-cta">Select Connection</span>
+            </button>
+
+            <button
+              type="button"
+              className="panel panel-option"
+              onClick={() => handleAddSource('sensor')}
+              aria-label="Add database connection"
+            >
+              <div className="panel-option-title">Sensor Input</div>
+              <div className="muted panel-option-desc">Connect your hardware devices to read ESG data automatically</div>
+              <span className="btn panel-cta">Select Sensor</span>
+            </button>
           </div>
         )}
 
@@ -185,11 +238,26 @@ export default function DataSources() {
             </p>
             <DatabaseLink
               value={dbConn}
-              onChange={(next) => setDbConn(updateDbConnection(next))}
+              onChange={(next) => setDbConn(next)}
               onConnect={handleDatabaseConnect}
               onDisconnect={() => { setDbConn(null) }} // Adjusted to remove DB connection
               onTest={() => { /* No longer testing DB connection */ }}
             />
+          </div>
+        )}
+
+        {selectedSourceType === 'sensor' && (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <h4 style={{ margin: 0 }}>Connect Sensor</h4>
+              <button className="btn secondary" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => setSelectedSourceType(null)}>
+                Cancel
+              </button>
+            </div>
+            <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+              Connect your sensor to read ESG data
+            </p>
+            <SensorLink value={sensorConn} company_id={company?.id} onConnect={handleSensorConnect} onDisconnect={() => { setSensorConn(null) }} />
           </div>
         )}
       </div>
@@ -212,7 +280,7 @@ export default function DataSources() {
             <tbody>
               {connectedSources.map((source) => (
                 <tr key={source.id}>
-                  <td>{source.type === 'file' ? 'File Upload' : 'Connection'}</td>
+                  <td>{source.type === 'file' ? 'File Upload' : source.type === 'database' ? 'Connection' : source.type === 'sensor' ? 'Sensor' : 'Source'}</td>
                   <td>{source.name}</td>
                   <td>
                     <span style={{ 

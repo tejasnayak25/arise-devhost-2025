@@ -14,13 +14,12 @@ export default function Dashboard() {
   const [invoiceData, setInvoiceData] = useState(null);
   const [itemEmissions, setItemEmissions] = useState(null);
   const [fallbackItemEmissions, setFallbackItemEmissions] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
 
   // Memoize derived KPIs and series to avoid recalculation on every render
   const kpis = useMemo(() => getAggregatedKPIs(invoiceData), [invoiceData]);
   const series = useMemo(() => getLatestEmissionsTimeSeries(invoiceData), [invoiceData]);
-
-  console.log('Dashboard render', { company, invoiceData, itemEmissions, fallbackItemEmissions });
 
   const handleCompanySuccess = useCallback(() => {
     // Refresh company info after join/create
@@ -96,6 +95,18 @@ export default function Dashboard() {
         </div>
         <div className="panel">
           <h3>Item-level Emissions</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <input
+              aria-label="Search items"
+              placeholder="Search items, unit or type..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{ flex: 1, padding: '6px 8px' }}
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} style={{ padding: '6px 8px' }}>Clear</button>
+            )}
+          </div>
           {invoiceData?.raw && invoiceData.raw.length > 0 ? (
             <table>
               <thead>
@@ -109,7 +120,25 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {(itemEmissions && Array.isArray(itemEmissions) ? itemEmissions : (fallbackItemEmissions || [])).map((it, i) => (
+                {(() => {
+                  const list = (itemEmissions && Array.isArray(itemEmissions) ? itemEmissions : (fallbackItemEmissions || []));
+                  const q = (searchQuery || '').trim().toLowerCase();
+                  const filtered = q
+                    ? list.filter((it) => {
+                        const name = (it.name || '').toString().toLowerCase();
+                        const unit = (it.unit || '').toString().toLowerCase();
+                        const type = (it.type || '').toString().toLowerCase();
+                        return name.includes(q) || unit.includes(q) || type.includes(q);
+                      })
+                    : list;
+                  if (filtered.length === 0) {
+                    return (
+                      <tr>
+                        <td colSpan={6} style={{ textAlign: 'center', color: '#666' }}>No items match your search.</td>
+                      </tr>
+                    );
+                  }
+                  return filtered.map((it, i) => (
                   <tr key={i}>
                     <td>{it.name}</td>
                     <td>{it.quantity ?? '-'}</td>
@@ -118,7 +147,8 @@ export default function Dashboard() {
                     <td>{it.emissions ?? '-'}</td>
                     <td style={{ maxWidth: 400, whiteSpace: 'normal' }}>{it.formula}</td>
                   </tr>
-                ))}
+                  ));
+                })()}
               </tbody>
             </table>
           ) : (
